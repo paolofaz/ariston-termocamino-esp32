@@ -31,6 +31,15 @@ pio device monitor
 Se PlatformIO è già installato via uv, usare `uv tool install --force --python 3.12 --with certifi --with cryptography platformio`.
 Il bundle TLS viene generato da certifi in compilazione. Nessuna modalità TLS insecure. Necessaria sincronizzazione NTP per autenticare il certificato. Il firmware OTA è in `.pio/build/esp32dev/firmware.bin`.
 
+### Installazione da binario già compilato
+
+Scaricare lo ZIP `ariston-termocamino-esp32-dev` dall'ultima esecuzione riuscita di [GitHub Actions](https://github.com/paolofaz/ariston-termocamino-esp32/actions). Le build con packaging factory includono due file:
+
+- `ariston-termocamino-factory.bin`: immagine completa per prima installazione USB su ESP32 classico 4 MB, indirizzo `0x0` (bootloader, partizioni, inizializzazione OTA e applicazione).
+- `firmware.bin`: applicazione per aggiornamento OTA dalla pagina web; non usare il factory per OTA.
+
+Con esptool 5: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x0 ariston-termocamino-factory.bin`. Sostituire la porta con quella effettiva. Per esptool 4 il comando è `esptool.py --chip esp32 --port /dev/cu.usbserial-XXXX write_flash 0x0 ariston-termocamino-factory.bin`. Non usare il factory per aggiornamenti ordinari: riscrive anche le aree di configurazione. Il file factory non è ancora collaudato su hardware reale.
+
 ## Prima configurazione e prova
 
 1. Collegare ESP32 via USB e aprire il monitor seriale a 115200.
