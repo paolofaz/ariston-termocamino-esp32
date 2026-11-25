@@ -4,7 +4,6 @@
 #include <functional>
 struct AristonConfig {
     String username, password, plant;
-    bool dryRun = true;
 };
 struct AristonResult {
     const char* message;

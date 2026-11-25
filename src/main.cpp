@@ -12,7 +12,7 @@
 
 namespace {
 constexpr int PIN=27;
-constexpr char VERSION[]="0.1.0-dev";
+constexpr char VERSION[]="0.1.1-dev";
 constexpr char REALM[]="Ariston Termocamino";
 Preferences prefs;
 WebServer server(80);
@@ -21,14 +21,14 @@ String ssid, wifiPassword, adminPassword, csrf;
 bool setupMode=false, storageOk=false, restartRequested=false;
 uint32_t restartAt=0;
 Contact contact;
-std::atomic<bool> enabled{false}, dryRun{true}, stableClosed{false}, ready{false};
+std::atomic<bool> enabled{false}, stableClosed{false}, ready{false};
 std::atomic<uint32_t> generation{0}, outstanding{0};
 std::atomic<int> verified{-1};
 QueueHandle_t queueHandle=nullptr;
 bool previouslyConnected=false;
 bool uploadAuthorized=false, uploadOk=false, uploadStarted=false;
 String serialLine;
-struct Event { uint32_t seq; int target; bool closed; bool dry; };
+struct Event { uint32_t seq; int target; bool closed; };
 struct Log { uint32_t seconds; const char* text; };
 constexpr size_t LOG_COUNT=12;
 Log logEntries[LOG_COUNT]{};
@@ -71,7 +71,6 @@ void cloudWorker(void*) {
         if(xQueueReceive(queueHandle,&e,portMAX_DELAY)!=pdTRUE) continue;
         if(!validEvent(e)) logEvent("Evento annullato: stato o connessione cambiati");
         else {
-            ariston.dryRun=e.dry;
             auto result=api.execute(e.target,[&](){return validEvent(e);});
             verified=result.verified;
             logEvent(result.message);
@@ -98,7 +97,7 @@ void readContact() {
     uint32_t seq=++generation;
     int target=targetFor(edge,enabled.load());
     if(target<0){logEvent("Cambio contatto ignorato: stagione estiva");return;}
-    if(WiFi.status()!=WL_CONNECTED || !enqueue({seq,target,contact.closed(),dryRun.load()})){
+    if(WiFi.status()!=WL_CONNECTED || !enqueue({seq,target,contact.closed()})){
         logEvent("Cambio contatto perso: rete o worker non disponibile");return;
     }
     logEvent(target==0?"Pompa accesa: evento ESTATE":"Pompa spenta: evento INVERNO");
@@ -149,9 +148,9 @@ bool loadSettings(){
 }
 void setupPage(){
     String h=pageStart("Configurazione iniziale");
-    h+=F("<section><p>Compila solo connesso direttamente alla rete Wi-Fi di configurazione della centralina. La prova senza scritture e la stagione estiva sono attive inizialmente.</p><form method='post' action='/setup'>");
+    h+=F("<section><p>Compila solo connesso direttamente alla rete Wi-Fi di configurazione della centralina. Scegli la stagione iniziale: in Inverno le variazioni del contatto inviano comandi reali. Nessun comando al riavvio.</p><form method='post' action='/setup'>");
     h+=hidden();
-    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><label>Password pagina locale (almeno 12 caratteri)<input name='admin' type='password' minlength='12' maxlength='64' required></label><button class='primary'>Salva e riavvia</button></form></section>");
+    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><label>Password pagina locale (almeno 12 caratteri)<input name='admin' type='password' minlength='12' maxlength='64' required></label><label>Stagione iniziale</label><select name='season' required style='font:inherit;padding:10px;margin-bottom:12px;width:100%'><option value='winter'>Inverno - automazione attiva</option><option value='summer'>Estate - automazione disabilitata</option></select><button class='primary'>Salva e riavvia</button></form></section>");
     sendHtml(h);
 }
 void saveSetup(){
@@ -160,7 +159,9 @@ void saveSetup(){
     if(!s.length()||s.length()>32||w.length()>63||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128||a.length()<12||a.length()>64){
         sendText(400,"Campi non validi");return;
     }
-    if(!prefs.putBool("winter",false)||!prefs.putBool("dry",true)){sendText(500,"Errore memoria");return;}
+    String season=server.arg("season");
+    if(season!="winter"&&season!="summer"){sendText(400,"Stagione non valida");return;}
+    if(!prefs.putBool("winter",season=="winter")){sendText(500,"Errore memoria");return;}
     JsonDocument d;
     d["ssid"]=s;d["wifi"]=w;d["username"]=u;d["password"]=p;d["plant"]=id;d["admin"]=a;
     String payload;
@@ -181,13 +182,10 @@ void dashboard(){
     h+=F("</dd><dt>Contatto</dt><dd>");h+=!ready.load()?"Non noto":stableClosed.load()?"Chiuso":"Aperto";
     h+=F("</dd><dt>Ultima lettura Ariston</dt><dd>");h+=modeName(verified.load());
     h+=F("</dd><dt>Comunicazione</dt><dd>");h+=pendingOrBusy()?"In corso":"In attesa";
-    h+=F("</dd><dt>Wi-Fi</dt><dd>");h+=String(WiFi.RSSI());h+=F(" dBm</dd><dt>Prova senza scritture</dt><dd>");
-    h+=dryRun.load()?"Attiva":"Disattiva";h+=F("</dd></dl><a href='/'>Aggiorna stato</a></section><section><h2>Collaudo</h2>");
+    h+=F("</dd><dt>Wi-Fi</dt><dd>");h+=String(WiFi.RSSI());h+=F(" dBm</dd></dl><a href='/'>Aggiorna stato</a></section><section><h2>Diagnostica</h2>");
     bool locked=enabled.load()||pendingOrBusy();
     h+=form("/test","action","read","Test connessione Ariston",false,locked);
-    h+=form("/dry","mode","on","Solo prova",dryRun.load(),locked);
-    h+=form("/dry","mode","off","Abilita scritture reali",!dryRun.load(),locked);
-    h+=F("<p><small>Test e cambio modalita di prova disponibili solo in stagione estiva e senza operazioni in corso. La prova legge il cloud ma non scrive.</small></p></section><section><h2>Ultimi eventi</h2><ul>");
+    h+=F("<p><small>Test facoltativo di sola lettura, disponibile in stagione estiva e senza operazioni in corso.</small></p></section><section><h2>Ultimi eventi</h2><ul>");
     Log copy[LOG_COUNT];size_t n,next;
     portENTER_CRITICAL(&logMux);
     n=logSize;next=logNext;
@@ -214,21 +212,10 @@ void changeSeason(){
     }
     redirect();
 }
-void changeDryRun(){
-    if(!postAuthorized())return;
-    if(enabled.load()||pendingOrBusy()){sendText(409,"Disabilitare automazione e attendere");return;}
-    String mode=server.arg("mode");
-    if(mode!="on"&&mode!="off"){sendText(400,"Modalita non valida");return;}
-    bool next=mode=="on";
-    if(!storageOk||!prefs.putBool("dry",next)){sendText(500,"Errore memoria");return;}
-    dryRun=next;baseline();
-    logEvent(next?"Prova senza scritture attiva":"Scritture reali abilitate");
-    redirect();
-}
 void testCloud(){
     if(!postAuthorized())return;
     if(enabled.load()||pendingOrBusy()||WiFi.status()!=WL_CONNECTED){sendText(409,"Test non disponibile");return;}
-    if(!enqueue({generation.load(),-1,false,true})){sendText(409,"Worker occupato");return;}
+    if(!enqueue({generation.load(),-1,false})){sendText(409,"Worker occupato");return;}
     logEvent("Test Ariston avviato (sola lettura)");
     redirect();
 }
@@ -288,7 +275,6 @@ void setup(){
         server.on("/setup",HTTP_POST,saveSetup);
     }else{
         enabled=prefs.getBool("winter",false);
-        dryRun=prefs.getBool("dry",true);
         WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         WiFi.setHostname("ariston-termocamino");
@@ -303,7 +289,6 @@ void setup(){
         }
         server.on("/",HTTP_GET,dashboard);
         server.on("/season",HTTP_POST,changeSeason);
-        server.on("/dry",HTTP_POST,changeDryRun);
         server.on("/test",HTTP_POST,testCloud);
         server.on("/update",HTTP_POST,uploadFinish,uploadChunk);
     }

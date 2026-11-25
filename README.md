@@ -1,6 +1,6 @@
 # Ariston Termocamino ESP32
 
-**Versione sperimentale 0.1.0-dev. Non installare definitivamente prima del collaudo.**
+**Versione sperimentale 0.1.1-dev. Non installare definitivamente prima del collaudo.**
 
 Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Ariston NET con Cube S e un termocamino. Nessun Home Assistant, Raspberry o broker MQTT necessario. Utilizza le API cloud non ufficiali già utilizzate da [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
 
@@ -35,11 +35,10 @@ Il bundle TLS viene generato da certifi in compilazione. Nessuna modalità TLS i
 
 1. Collegare ESP32 via USB e aprire il monitor seriale a 115200.
 2. Al primo avvio, leggere nome e password casuale della rete Ariston-Setup sul monitor seriale; connettersi direttamente a quella rete e aprire http://192.168.4.1.
-3. Inserire Wi-Fi, credenziali Ariston NET, eventuale ID impianto (obbligatorio se più caldaie nell'account) e password amministratore. Il firmware si riavvia.
+3. Inserire Wi-Fi, credenziali Ariston NET, eventuale ID impianto (obbligatorio se più caldaie nell'account) password amministratore e stagione iniziale. Il firmware si riavvia senza inviare comandi.
 4. Tornare alla rete di casa; trovare IP nel monitor seriale. Aprire http://IP e autenticarsi come admin con la password scelta.
-5. Il dispositivo nasce in stagione Estate (disabilitato) e prova senza scritture attiva. In Estate provare il pulsante Test connessione Ariston (sola lettura).
-6. Selezionare Inverno e attendere acquisizione iniziale. Provare ad aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi. Consultare gli ultimi eventi. Provare anche riavvio, cambio stagione, perdita Wi-Fi.
-7. Solo dopo tutte le verifiche, con caldaia e impianto sorvegliati, selezionare Estate, abilitare scritture reali, selezionare Inverno e provare un cambio di stato. Verificare nell'app ufficiale Ariston.
+5. In Inverno l’automazione è già operativa: non esiste una modalità simulazione né un consenso aggiuntivo. In Estate il pulsante Test connessione Ariston è disponibile facoltativamente (sola lettura).
+6. Selezionare Inverno se non già scelto e attendere acquisizione iniziale. Con caldaia e impianto sorvegliati, aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi: i comandi sono reali. Controllare l’app ufficiale e gli ultimi eventi. Verificare anche riavvio, cambio stagione e perdita Wi-Fi.
 
 Per riconfigurare, usare il comando seriale `RESET_CONFIG` seguito da invio, poi ripetere il setup. Le password non vengono pubblicate nel repository; sono salvate nella NVS locale non cifrata. La pagina locale usa autenticazione HTTP Digest, non HTTPS: usare soltanto rete privata fidata, non esporre porte Internet. Le credenziali di configurazione transitano nella rete AP protetta da password.
 

@@ -184,7 +184,6 @@ AristonResult AristonApi::execute(int target,const std::function<bool()>& stillV
     if (current!=0 && current!=1) return {"Modalita caldaia protetta: nessuna scrittura",current};
     if (!allowed) return {"Modalita richiesta non supportata",current};
     if (!stillValid()) return {"Evento superato: nessuna scrittura",current};
-    if (cfg_.dryRun) return {target==0?"TEST: invierei ESTATE":"TEST: invierei INVERNO",current};
     JsonDocument body, reply;
     auto item=body["items"].to<JsonArray>().add<JsonObject>();
     item["id"]="PlantMode"; item["zone"]=0; item["prevValue"]=current; item["value"]=target;
