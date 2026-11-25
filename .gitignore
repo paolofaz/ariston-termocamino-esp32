@@ -1,0 +1,6 @@
+.pio/
+.vscode/
+include/generated_ca.h
+__pycache__/
+secrets*
+.DS_Store
