@@ -394,14 +394,15 @@ void setup(){
     setenv("TZ","CET-1CEST,M3.5.0,M10.5.0/3",1);tzset();
     storageOk=prefs.begin("ariston",false);
     setupMode=!storageOk||!loadSettings();
+    WiFi.persistent(false);
+    WiFi.mode(setupMode?WIFI_AP:WIFI_STA); // enable radio before generating secrets
     if(storageOk)recoveryPassword=prefs.getString("recover","");
     if(recoveryPassword.length()==16)recoveryStored=true;
     else {recoveryPassword=randomHex().substring(0,16);recoveryStored=storageOk&&prefs.putString("recover",recoveryPassword)==16;}
     issue=storageOk&&prefs.getBool("issue",false);
     if(issue)lastStatus="Evento precedente non verificato (memoria persistente)";
-    WiFi.persistent(false);
     if(setupMode){
-        enabled=false;WiFi.mode(WIFI_AP);
+        enabled=false;
         String apPassword=recoveryPassword;
         String apName="Ariston-Setup-"+String(uint32_t(ESP.getEfuseMac())&0xffff,HEX);
         if(!WiFi.softAP(apName.c_str(),apPassword.c_str()))Serial.println("Errore access point");
@@ -412,7 +413,6 @@ void setup(){
         server.on("/setup",HTTP_POST,saveSetup);
     }else{
         enabled=prefs.getBool("winter",false);
-        WiFi.mode(WIFI_STA);
         WiFi.setAutoReconnect(true);
         WiFi.setHostname(HOST);
         offlineSince=millis();
@@ -447,11 +447,17 @@ void loop(){
             previouslyConnected=connected;
             if(!connected){
                 ++generation;offlineSince=millis();
+                if(issue&&pendingOrBusy())lastStatus="Connessione persa durante operazione: verificare Ariston";
                 if(mdnsActive){MDNS.end();mdnsActive=false;}
             }
             logEvent(connected?"Wi-Fi connesso":"Wi-Fi disconnesso");
             if(connected){
                 if(recoveryActive){WiFi.softAPdisconnect(true);WiFi.mode(WIFI_STA);recoveryActive=false;}
+                // Do not turn a pre-reconnect candidate into a delayed write.
+                if(ready.load()&&rawClosed()!=stableClosed.load()&&enabled.load()){
+                    setIssue(true);lastStatus="Possibile cambio contatto durante assenza rete";logEvent(lastStatus);
+                }
+                baseline();
                 mdnsActive=MDNS.begin(HOST);
                 if(mdnsActive)MDNS.addService("http","tcp",80);
                 else logEvent("mDNS non disponibile: usare IP");
@@ -469,6 +475,6 @@ void loop(){
         if(!restartRequested)readContact();
     }
     server.handleClient();
-    if(restartRequested && uint32_t(millis()-restartAt)>800 && !pendingOrBusy())ESP.restart();
+    if(restartRequested && uint32_t(millis()-restartAt)>800 && !pendingOrBusy() && digitalRead(BOOT_PIN)==HIGH)ESP.restart();
     delay(10);
 }
