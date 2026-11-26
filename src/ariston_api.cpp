@@ -9,7 +9,7 @@
 namespace {
 constexpr char BASE[] = "https://www.ariston-net.remotethermo.com";
 constexpr size_t MAX_BODY = 48 * 1024;
-constexpr int BAD_JSON = -1001, OFFLINE = -1002, CLOCK = -1003, BAD_DATA = -1004;
+constexpr int BAD_JSON = -1001, OFFLINE = -1002, CLOCK = -1003, BAD_DATA = -1004, BLOCKED = -1005, CANCELLED = -1006, AUTH_BLOCKED = -1007;
 class BoundedBody : public Stream {
 public:
     String data;
@@ -46,7 +46,9 @@ bool denied(const JsonDocument& d) {
            (d["ok"].is<bool>() && !d["ok"].as<bool>());
 }
 const char* errorMessage(int n) {
-    if (n == 429) return "Ariston: limite richieste, operazione annullata";
+    if (n == 429 || n == BLOCKED) return "Ariston: limite richieste, operazione annullata";
+    if (n == CANCELLED) return "Evento superato: nessuna scrittura";
+    if (n == AUTH_BLOCKED) return "Login rifiutato: pausa di 5 minuti";
     if (authError(n)) return "Ariston: autenticazione non riuscita";
     if (n == OFFLINE) return "Wi-Fi non disponibile";
     if (n == CLOCK) return "Orologio non sincronizzato: TLS non disponibile";
@@ -55,9 +57,11 @@ const char* errorMessage(int n) {
 }
 }
 
-int AristonApi::request(const char* method, const String& path, const JsonDocument* body, JsonDocument& out) {
+int AristonApi::request(const char* method, const String& path, const JsonDocument* body, JsonDocument& out,
+                         const std::function<bool()>* valid, bool* attempted) {
     out.clear();
-    if (cooldown_ && uint32_t(millis()-blockedAt_) < cooldown_) return 429;
+    if (valid && !(*valid)()) return CANCELLED;
+    if (cooldown_ && uint32_t(millis()-blockedAt_) < cooldown_) return BLOCKED;
     if (WiFi.status()!=WL_CONNECTED) return OFFLINE;
     if (time(nullptr)<1735689600) return CLOCK;
     WiFiClientSecure tls;
@@ -76,10 +80,17 @@ int AristonApi::request(const char* method, const String& path, const JsonDocume
     int status;
     if (body) {
         String payload;
-        if (!serializeJson(*body, payload)) { http.end(); return BAD_JSON; }
+        const size_t expected=measureJson(*body);
+        if (!expected || expected>MAX_BODY || !payload.reserve(expected) ||
+            serializeJson(*body,payload)!=expected || payload.length()!=expected) { http.end(); return BAD_JSON; }
         http.addHeader("Content-Type","application/json");
+        if (valid && !(*valid)()) { http.end(); return CANCELLED; }
+        if (attempted) *attempted=true;
         status=http.POST(payload);
-    } else status=http.GET();
+    } else {
+        if (valid && !(*valid)()) { http.end(); return CANCELLED; }
+        status=http.GET();
+    }
     if (status==429) {
         if (throttles_<5) ++throttles_;
         uint32_t seconds = 300u << (throttles_-1);
@@ -102,27 +113,31 @@ int AristonApi::request(const char* method, const String& path, const JsonDocume
     return 200;
 }
 
-int AristonApi::login() {
+int AristonApi::login(const std::function<bool()>& valid) {
+    if (authBlocked_ && uint32_t(millis()-authBlockedAt_)<300000u) return AUTH_BLOCKED;
+    authBlocked_=false;
     token_="";
     JsonDocument body, reply;
     body["usr"]=cfg_.username; body["pwd"]=cfg_.password;
-    int r=request("POST","/api/v2/accounts/login",&body,reply);
+    int r=request("POST","/api/v2/accounts/login",&body,reply,&valid);
+    if (authError(r) || (r==200 && denied(reply))) {
+        authBlocked_=true; authBlockedAt_=millis(); return 401;
+    }
     if (r!=200) return r;
-    if (denied(reply)) return 401;
     const char* t=reply["token"].as<const char*>();
     if (!t || !*t || strlen(t)>8192) return BAD_DATA;
     token_=t;
     return 200;
 }
 
-int AristonApi::readMode(const String& plant,const JsonDocument& features,int& current,int target,bool& allowed) {
+int AristonApi::readMode(const String& plant,const JsonDocument& features,int& current,int target,bool& allowed,const std::function<bool()>* valid) {
     JsonDocument body, reply;
     body["useCache"]=false;
     auto item=body["items"].to<JsonArray>().add<JsonObject>();
     item["id"]="PlantMode"; item["zn"]=0;
     body["features"].set(features.as<JsonVariantConst>());
     if (body.overflowed()) return BAD_JSON;
-    int r=request("POST","/api/v2/remote/dataItems/"+plant+"/get?umsys=si",&body,reply);
+    int r=request("POST","/api/v2/remote/dataItems/"+plant+"/get?umsys=si",&body,reply,valid);
     if (r!=200) return r;
     auto items=reply["items"].as<JsonArrayConst>();
     if (items.isNull()) return BAD_DATA;
@@ -143,11 +158,12 @@ int AristonApi::readMode(const String& plant,const JsonDocument& features,int& c
     return found?200:BAD_DATA;
 }
 
-int AristonApi::prepare(String& plant,JsonDocument& features,int& current,int target,bool& allowed) {
-    if (token_.isEmpty()) { int r=login(); if (r!=200) return r; }
+int AristonApi::prepare(String& plant,JsonDocument& features,int& current,int target,bool& allowed,const std::function<bool()>& valid) {
+    if (!valid()) return CANCELLED;
+    if (token_.isEmpty()) { int r=login(valid); if (r!=200) return r; }
     // Never auto-select among multiple plants. Check configured id against account list.
     JsonDocument list;
-    int r=request("GET","/api/v2/remote/plants/lite",nullptr,list);
+    int r=request("GET","/api/v2/remote/plants/lite",nullptr,list,&valid);
     if (r!=200) return r;
     auto arr=list.as<JsonArrayConst>();
     if (arr.isNull() || !arr.size()) return BAD_DATA;
@@ -158,44 +174,53 @@ int AristonApi::prepare(String& plant,JsonDocument& features,int& current,int ta
     }
     if (!safeId(plant)) return BAD_DATA;
     list.clear();
-    r=request("GET","/api/v2/remote/plants/"+plant+"/features?eagerMode=True",nullptr,features);
+    r=request("GET","/api/v2/remote/plants/"+plant+"/features?eagerMode=True",nullptr,features,&valid);
     if (r!=200) return r;
     if (!features.is<JsonObject>() || !features.size()) return BAD_DATA;
-    return readMode(plant,features,current,target,allowed);
+    return readMode(plant,features,current,target,allowed,&valid);
 }
 
 AristonResult AristonApi::execute(int target,const std::function<bool()>& stillValid) {
-    if (target!=-1 && target!=0 && target!=1) return {"Comando non valido"};
-    if (!stillValid()) return {"Evento superato: nessuna scrittura"};
     String plant;
     JsonDocument features;
-    int current=-1; bool allowed=false;
-    int r=prepare(plant,features,current,target,allowed);
-    // Refresh auth once during read-only preparation, never after a control POST.
-    if (authError(r)) {
-        token_=""; features.clear();
-        if (!stillValid()) return {"Evento superato: nessuna scrittura"};
-        r=prepare(plant,features,current,target,allowed);
-    }
-    if (r!=200) return {errorMessage(r)};
-    if (target<0) return {"Test Ariston: lettura riuscita",current};
-    if (current==target) return {"Modalita gia corretta: nessuna scrittura",current};
-    // Deliberate safety policy: never turn a manually OFF/other-mode boiler back on.
-    if (current!=0 && current!=1) return {"Modalita caldaia protetta: nessuna scrittura",current};
-    if (!allowed) return {"Modalita richiesta non supportata",current};
-    if (!stillValid()) return {"Evento superato: nessuna scrittura",current};
-    JsonDocument body, reply;
-    auto item=body["items"].to<JsonArray>().add<JsonObject>();
-    item["id"]="PlantMode"; item["zone"]=0; item["prevValue"]=current; item["value"]=target;
-    body["features"].set(features.as<JsonVariantConst>());
-    if (body.overflowed()) return {"Memoria insufficiente: nessuna scrittura",current};
-    if (!stillValid()) return {"Evento superato: nessuna scrittura",current};
-    r=request("POST","/api/v2/remote/dataItems/"+plant+"/set?umsys=si",&body,reply);
-    if (r!=200) return {"Scrittura fallita o incerta: verificare app Ariston"};
-    if (denied(reply)) return {"Ariston ha rifiutato il comando"};
-    body.clear(); reply.clear();
-    int after=-1; bool ignored=false;
-    r=readMode(plant,features,after,target,ignored);
-    if (r==200 && after==target) return {"Comando confermato dal cloud",after};
-    return {"Comando non confermato: verificare app Ariston"};
+    auto prepareState=[&]() -> Preparation {
+        int current=-1; bool allowed=false;
+        const bool hadToken=!token_.isEmpty();
+        int r=prepare(plant,features,current,target,allowed,stillValid);
+        // Only refresh a previously cached token, not a rejected fresh login.
+        if (authError(r)) {
+            token_="";
+            if(hadToken && stillValid()) {
+                features.clear();
+                r=prepare(plant,features,current,target,allowed,stillValid);
+                if(authError(r)) token_="";
+            }
+        }
+        if(r!=200) return {false,errorMessage(r)};
+        return {true,"",{current,int64_t(time(nullptr))},allowed};
+    };
+    auto write=[&](int current) -> PostResult {
+        JsonDocument body,reply;
+        auto item=body["items"].to<JsonArray>().add<JsonObject>();
+        item["id"]="PlantMode"; item["zone"]=0; item["prevValue"]=current; item["value"]=target;
+        body["features"].set(features.as<JsonVariantConst>());
+        if(body.overflowed()) return {PostKind::NotSent,"Memoria insufficiente: nessuna scrittura"};
+        bool attempted=false;
+        int r=request("POST","/api/v2/remote/dataItems/"+plant+"/set?umsys=si",&body,reply,&stillValid,&attempted);
+        if(!attempted) return {PostKind::NotSent,errorMessage(r)};
+        if(authError(r)) token_="";
+        if(r==429) return {PostKind::Rejected,"Ariston: scrittura rifiutata (429), pausa richieste",true};
+        if((r>=400 && r<500 && r!=408) || (r==200 && denied(reply)))
+            return {PostKind::Rejected,"Ariston ha rifiutato il comando",true};
+        return {r==200?PostKind::Accepted:PostKind::Uncertain,"Esito da verificare",true};
+    };
+    auto readBack=[&]() -> Observation {
+        int after=-1; bool ignored=false;
+        // Readback is safe even if contact changed during the already dispatched POST.
+        int r=readMode(plant,features,after,target,ignored);
+        if(authError(r)) token_="";
+        if(r!=200) return {};
+        return {after,int64_t(time(nullptr))};
+    };
+    return controlFlow(target,stillValid,prepareState,write,readBack);
 }

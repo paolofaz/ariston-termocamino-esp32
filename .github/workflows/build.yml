@@ -13,8 +13,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install platformio==6.1.18 certifi cryptography
+      - run: python -m pip install platformio==6.1.18 certifi==2026.11.20 cryptography==50.0.2
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test
+      - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/control_flow_test.cpp -o /tmp/control-flow-test && /tmp/control-flow-test
       - run: pio run
       - name: Package complete first-install binary
         run: |
