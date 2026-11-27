@@ -25,7 +25,7 @@ public:
     bool ready() const { return initialized_; }
     bool closed() const { return stable_; }
 };
-inline int targetFor(Edge edge, bool enabled) {
-    if (!enabled || edge == Edge::None) return -1;
+inline int targetFor(Edge edge, bool operational) {
+    if (!operational || edge == Edge::None) return -1;
     return edge == Edge::Closed ? 0 : 1;
 }

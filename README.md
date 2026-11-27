@@ -1,6 +1,6 @@
 # Ariston Termocamino ESP32
 
-**Versione sperimentale 0.1.3-dev. Non installare definitivamente prima del collaudo.**
+**Versione sperimentale 0.1.4-dev. Non installare definitivamente prima del collaudo.**
 
 Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Ariston NET con Cube S e un termocamino. Nessun Home Assistant, Raspberry o broker MQTT necessario. Utilizza le API cloud non ufficiali già utilizzate da [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
 
@@ -8,14 +8,14 @@ Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Aristo
 
 Contatto pulito, normalmente aperto (NO), del relè della pompa: NO al GPIO27, COM a GND. L'ingresso usa INPUT_PULLUP a 3,3 V; non occorre una resistenza esterna per collegamenti brevi e in ambiente poco disturbato. **Mai collegare tensione esterna al GPIO, né il circuito della bobina o della pompa.** Verificare che il contatto sia realmente isolato e a potenziale libero e adatto a piccoli segnali; cavi lunghi o vicini alla rete elettrica possono richiedere un ingresso isolato. Alimentare l'ESP32 via USB 5 V.
 
-| Evento stabile (3 s) | Stagione Inverno | Stagione Estate |
-|---|---|---|
-| Aperto → chiuso (pompa ON) | PlantMode=0 | Ignorato |
-| Chiuso → aperto (pompa OFF) | PlantMode=1 | Ignorato |
-| Accensione / riavvio / cambio stagione | Nessuna scrittura | Nessuna scrittura |
-| Riconnessione Wi-Fi | Nessun recupero eventi persi | Nessuna scrittura |
+| Evento stabile (3 s) | Azione |
+|---|---|
+| Aperto → chiuso (pompa ON) | PlantMode=0 (Estate) |
+| Chiuso → aperto (pompa OFF) | PlantMode=1 (Inverno) |
+| Accensione / riavvio | Nessuna scrittura |
+| Riconnessione Wi-Fi | Nessuna scrittura, nessun recupero eventi persi |
 
-La selezione stagione è un consenso all'automazione, non un comando diretto. La caldaia impostata manualmente su Spenta o altra modalità diversa da 0/1 non viene riattivata automaticamente. Non viene eseguito alcun polling cloud periodico. Le variazioni durante assenza alimentazione o rete possono essere perse intenzionalmente. Un nuovo evento invalida i precedenti non ancora inviati; un comando già trasmesso non è annullabile. In caso di esito incerto non si ripete la scrittura.
+L'automazione è sempre attiva quando la centralina è alimentata, configurata e operativa. In estate scollegare l'alimentazione USB della centralina; questo non cambia la modalità della caldaia, che va eventualmente impostata manualmente. Il precedente selettore stagionale e il valore salvato vengono rimossi: anche chi aveva selezionato Estate nelle vecchie versioni avrà l'automazione attiva al prossimo cambio stabile del contatto. La caldaia impostata manualmente su Spenta o altra modalità diversa da 0/1 non viene riattivata automaticamente. Non viene eseguito alcun polling cloud periodico. Le variazioni durante assenza alimentazione o rete possono essere perse intenzionalmente. Un nuovo evento invalida i precedenti non ancora inviati; un comando già trasmesso non è annullabile. In caso di esito incerto non si ripete la scrittura.
 
 ## Compilazione Mac
 
@@ -44,24 +44,24 @@ Con esptool 5: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0
 
 1. Collegare ESP32 via USB e aprire il monitor seriale a 115200.
 2. Al primo avvio, leggere nome e password casuale della rete Ariston-Setup sul monitor seriale (conservare la password per il recupero); connettersi direttamente a quella rete e aprire http://192.168.4.1.
-3. Inserire Wi-Fi, credenziali Ariston NET, eventuale ID impianto (obbligatorio se più caldaie nell'account) password di manutenzione e stagione iniziale. Il firmware si riavvia senza inviare comandi.
-4. Tornare alla rete di casa; aprire http://ariston-termocamino.local oppure http://IP (IP nel monitor seriale) senza login. Selettore stagionale, verifica stato e riallineamento sono disponibili direttamente. Solo Configurazione e Aggiornamento firmware richiedono l'utente admin e la password di manutenzione.
-5. In Inverno l’automazione è già operativa: non esiste una modalità simulazione né un consenso aggiuntivo. Il pulsante Verifica stato Ariston è disponibile in entrambe le stagioni (sola lettura).
-6. Selezionare Inverno se non già scelto e attendere acquisizione iniziale. Con caldaia e impianto sorvegliati, aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi: i comandi sono reali. Controllare l’app ufficiale e gli ultimi eventi. Verificare anche riavvio, cambio stagione e perdita Wi-Fi.
+3. Inserire Wi-Fi, credenziali Ariston NET, eventuale ID impianto (obbligatorio se più caldaie nell'account) e password di manutenzione. Il firmware si riavvia senza inviare comandi.
+4. Tornare alla rete di casa; aprire http://ariston-termocamino.local oppure http://IP (IP nel monitor seriale) senza login. Verifica stato e riallineamento sono disponibili direttamente. Solo Configurazione e Aggiornamento firmware richiedono l'utente admin e la password di manutenzione.
+5. L’automazione è già operativa: non esiste un selettore stagionale né una modalità simulazione. Il pulsante Verifica stato Ariston è disponibile su richiesta (sola lettura).
+6. Attendere acquisizione iniziale. Con caldaia e impianto sorvegliati, aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi: i comandi sono reali. Controllare l’app ufficiale e gli ultimi eventi. Verificare anche riavvio e perdita Wi-Fi.
 
 ## Recupero e diagnostica
 
-- In Inverno il pulsante **Riallinea caldaia** avvia una singola operazione esplicita verso la modalità richiesta dal contatto stabile. Rispetta il limite delle modalità 0/1, non scrive se la caldaia è già allineata e non riattiva una caldaia spenta. Non esiste un riallineamento automatico.
-- Un evento in corso, perso o non confermato lascia un avviso persistente in NVS. Non vengono salvati comandi da eseguire al boot. Una successiva operazione riuscita o una lettura esplicita corrispondente al contatto in Inverno può cancellare l'avviso. L'ultima osservazione Ariston è mantenuta in RAM anche quando una chiamata fallisce; è storica, con data, e non prova lo stato attuale della caldaia. Dopo riavvio la lettura è sconosciuta fino alla prossima operazione.
+- Il pulsante **Riallinea caldaia** avvia una singola operazione esplicita verso la modalità richiesta dal contatto stabile. Rispetta il limite delle modalità 0/1, non scrive se la caldaia è già allineata e non riattiva una caldaia spenta. Non esiste un riallineamento automatico.
+- Un evento in corso, perso o non confermato lascia un avviso persistente in NVS. Non vengono salvati comandi da eseguire al boot. Una successiva operazione riuscita o una lettura esplicita corrispondente al contatto può cancellare l'avviso. L'ultima osservazione Ariston è mantenuta in RAM anche quando una chiamata fallisce; è storica, con data, e non prova lo stato attuale della caldaia. Dopo riavvio la lettura è sconosciuta fino alla prossima operazione.
 - Dopo un esito POST incerto si tenta una lettura, se il servizio è raggiungibile e non in cooldown; mai una seconda scrittura. Un rifiuto 429 non viene ritentato. Un login rifiutato impone una pausa di 5 minuti in RAM; un token precedentemente ottenuto ma scaduto può essere rinnovato una volta. Nessun polling cloud periodico.
 - Gli ultimi 32 eventi sono mantenuti in RAM con ora locale italiana NTP (oppure uptime finché l'orologio non è sincronizzato). La dashboard mostra heap libero, minimo e blocco maggiore, stack minimo residuo del worker e contatori dall'avvio. Non è previsto un servizio push.
 - Se il Wi-Fi manca per 5 minuti, si avvia un access point WPA2 `Ariston-Recovery-xxxx`, con password casuale persistente mostrata solo nella pagina Configurazione autenticata (non nella dashboard). Conservare questa password. La pagina la mostra dopo autenticazione su HTTP non cifrato: utilizzare esclusivamente una rete privata fidata. Collegarsi direttamente e aprire http://192.168.4.1; aprire Modifica configurazione e autenticarsi come admin. In modalità AP+STA le scansioni e i cambi di canale possono interrompere temporaneamente la connessione dei client: da verificare su hardware reale. L'AP si spegne quando il Wi-Fi di casa torna disponibile; non vengono recuperati gli eventi persi. Alla riconnessione si acquisisce una nuova baseline senza scrivere e si segnalano eventuali cambi non ancora stabilizzati.
-- Dalla pagina Modifica configurazione si possono aggiornare Wi-Fi, account Ariston, ID impianto e password amministratore senza cancellare la stagione. Il salvataggio riavvia il dispositivo senza inviare comandi. Campi lasciati vuoti conservano i valori, salvo le opzioni esplicite per rete aperta e rimozione ID impianto.
+- Dalla pagina Modifica configurazione si possono aggiornare Wi-Fi, account Ariston, ID impianto e password amministratore senza ripristinare l'intero dispositivo. Il salvataggio riavvia il dispositivo senza inviare comandi. Campi lasciati vuoti conservano i valori, salvo le opzioni esplicite per rete aperta e rimozione ID impianto.
 - Per un reset completo della configurazione, tenere premuto BOOT per 10 secondi e poi rilasciarlo **a dispositivo già avviato** (non durante l'accensione), oppure inviare `RESET_CONFIG` via seriale. La configurazione viene cancellata, ma la password AP di recupero viene conservata: ricollegarsi ad `Ariston-Setup-xxxx` e ripetere la configurazione. In fase di avvio la pressione di BOOT può entrare nella modalità flash del chip. Le password non vengono pubblicate nel repository; sono salvate nella NVS locale non cifrata. La dashboard e i comandi operativi sono accessibili senza autenticazione a chiunque possa raggiungere il dispositivo sulla LAN. Le pagine di manutenzione usano autenticazione HTTP Digest, non HTTPS; i token anti-CSRF di manutenzione sono separati da quelli operativi. Le richieste accettano solo IP locale e nome host previsto per limitare il DNS rebinding. Usare soltanto una rete privata fidata, non esporre porte Internet. Le credenziali di configurazione transitano nella rete AP protetta da password.
 
 ## OTA sperimentale
 
-In stagione Estate, senza operazioni in corso, aprire Aggiornamento firmware, autenticarsi come admin e caricare il solo firmware.bin. Per aggiornare dalla v0.1.2-dev usare la pagina OTA esistente; credenziali e stagione sono conservate. I due slot OTA conservano la NVS durante aggiornamenti normali. L'immagine non è firmata: usare esclusivamente build fidate dello stesso progetto. Verificare OTA su banco prima dell'uso reale. In caso di problemi recuperare via USB.
+Senza operazioni in corso, preferibilmente a pompa ferma, aprire Aggiornamento firmware, autenticarsi come admin e caricare il solo firmware.bin. Durante il caricamento il campionamento del contatto è sospeso; gli eventi non vengono recuperati e si acquisisce una nuova baseline senza scrivere. Per aggiornare da v0.1.2-dev o v0.1.3-dev selezionare Estate nella vecchia pagina e usare la procedura OTA esistente. Le credenziali sono conservate; la vecchia impostazione stagionale è ignorata e rimossa. I due slot OTA conservano la NVS durante aggiornamenti normali. L'immagine non è firmata: usare esclusivamente build fidate dello stesso progetto. Verificare OTA su banco prima dell'uso reale. In caso di problemi recuperare via USB.
 
 ## Limiti
 

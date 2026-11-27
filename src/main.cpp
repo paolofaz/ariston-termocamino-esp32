@@ -16,7 +16,7 @@ namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="0.1.3-dev";
+constexpr char VERSION[]="0.1.4-dev";
 constexpr char REALM[]="Ariston Termocamino";
 Preferences prefs;
 WebServer server(80);
@@ -33,11 +33,11 @@ std::atomic<uint32_t> workerStackMin{0};
 bool setupMode=false, storageOk=false, restartRequested=false;
 uint32_t restartAt=0;
 Contact contact;
-std::atomic<bool> enabled{false}, stableClosed{false}, ready{false};
+std::atomic<bool> operational{false}, stableClosed{false}, ready{false};
 std::atomic<uint32_t> generation{0}, outstanding{0};
 QueueHandle_t queueHandle=nullptr, resultQueue=nullptr;
 bool previouslyConnected=false;
-bool uploadAuthorized=false, uploadOk=false, uploadStarted=false;
+bool uploadAuthorized=false, uploadOk=false, uploadStarted=false, uploadHadBaseline=false, uploadPreviousClosed=false;
 String serialLine;
 struct Event { uint32_t seq; int target; bool closed; };
 struct Completed { Event event; AristonResult result; };
@@ -75,7 +75,7 @@ bool pendingOrBusy(){return outstanding.load()!=0;}
 bool validEvent(const Event& e) {
     if(generation.load()!=e.seq || WiFi.status()!=WL_CONNECTED) return false;
     if(e.target<0) return true;
-    return enabled.load() && ready.load() && stableClosed.load()==e.closed && rawClosed()==e.closed;
+    return operational.load() && ready.load() && stableClosed.load()==e.closed && rawClosed()==e.closed;
 }
 void setIssue(bool next){
     if(issue==next)return;
@@ -108,7 +108,7 @@ void collectResults(){
         if(c.event.seq!=generation.load()||restartRequested)continue;
         lastStatus=r.message;
         if(c.event.target>=0) setIssue(!satisfied(r.outcome));
-        else if(r.outcome==Outcome::ReadOk && enabled.load() && ready.load() &&
+        else if(r.outcome==Outcome::ReadOk && operational.load() && ready.load() &&
                 r.observation.mode==(stableClosed.load()?0:1)) setIssue(false);
     }
 }
@@ -132,8 +132,8 @@ void readContact() {
     if(edge==Edge::None)return;
     stableClosed=contact.closed();
     uint32_t seq=++generation;
-    int target=targetFor(edge,enabled.load());
-    if(target<0){logEvent("Cambio contatto ignorato: stagione estiva");return;}
+    int target=targetFor(edge,operational.load());
+    if(target<0){logEvent("Cambio contatto: automazione non disponibile");return;}
     setIssue(true); // An interrupted/pending event remains visible after reboot, never replayed.
     if(WiFi.status()!=WL_CONNECTED || !enqueue({seq,target,contact.closed()})){
         lastStatus="Cambio contatto perso: rete o worker non disponibile";++errorCount;
@@ -189,7 +189,7 @@ bool postAuthorized(bool admin=false){
     if(restartRequested){sendText(409,"Riavvio in corso");return false;}
     return true;
 }
-void scheduleRestart(){restartRequested=true;restartAt=millis();enabled=false;++generation;}
+void scheduleRestart(){restartRequested=true;restartAt=millis();operational=false;++generation;}
 bool loadSettings(){
     String json=prefs.getString("config","");
     JsonDocument d;
@@ -217,9 +217,9 @@ bool storeConfig(const String& s,const String& w,const String& u,const String& p
 void setupPage(){
     if(!requireLocal())return;
     String h=pageStart("Configurazione iniziale");
-    h+=F("<section><p>Compila solo connesso direttamente alla rete Wi-Fi di configurazione della centralina. Scegli la stagione iniziale: in Inverno le variazioni del contatto inviano comandi reali. Nessun comando al riavvio.</p><form method='post' action='/setup'>");
+    h+=F("<section><p>Compila solo connesso direttamente alla rete Wi-Fi di configurazione della centralina. L automazione e attiva quando il dispositivo e alimentato e configurato. Nessun comando al riavvio.</p><form method='post' action='/setup'>");
     h+=hidden();
-    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><label>Password manutenzione (almeno 12 caratteri, non serve per la dashboard)<input name='admin' type='password' minlength='12' maxlength='64' required></label><label>Stagione iniziale</label><select name='season' required style='font:inherit;padding:10px;margin-bottom:12px;width:100%'><option value='winter'>Inverno - automazione attiva</option><option value='summer'>Estate - automazione disabilitata</option></select><button class='primary'>Salva e riavvia</button></form></section>");
+    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><label>Password manutenzione (almeno 12 caratteri, non serve per la dashboard)<input name='admin' type='password' minlength='12' maxlength='64' required></label><button class='primary'>Salva e riavvia</button></form></section>");
     sendHtml(h);
 }
 void saveSetup(){
@@ -229,9 +229,6 @@ void saveSetup(){
     if(!validWifi(s,w)||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128||a.length()<12||a.length()>64){
         sendText(400,"Campi non validi");return;
     }
-    String season=server.arg("season");
-    if(season!="winter"&&season!="summer"){sendText(400,"Stagione non valida");return;}
-    if(!prefs.putBool("winter",season=="winter")){sendText(500,"Errore memoria");return;}
     if(!prefs.putBool("issue",false)||!storeConfig(s,w,u,p,id,a)){
         sendText(500,"Errore salvataggio");return;
     }
@@ -278,27 +275,26 @@ void saveConfiguration(){
 void dashboard(){
     if(!requireLocal())return;
     String h=pageStart("Ariston Termocamino");
-    h+=F("<small>Centralina autonoma ESP32 | Firmware ");h+=VERSION;h+=F("</small><section><h2>Stagione automazione</h2>");
-    h+=form("/season","mode","summer","Estate - disabilitata",!enabled.load());
-    h+=form("/season","mode","winter","Inverno - abilitata",enabled.load());
-    h+=F("<p><small>Il cambio stagione non modifica la caldaia. Agisce solo alla prossima variazione stabile del contatto.</small></p></section><section><h2>Stato</h2><dl><dt>Pompa</dt><dd>");
+    h+=F("<small>Centralina autonoma ESP32 | Firmware ");h+=VERSION;h+=F("</small><section><h2>Stato</h2><dl><dt>Automazione</dt><dd>");
+    h+=operational.load()?"Attiva":"Non disponibile";
+    h+=F("</dd><dt>Pompa</dt><dd>");
     h+=!ready.load()?"Acquisizione":stableClosed.load()?"Accesa":"Spenta";
     h+=F("</dd><dt>Contatto</dt><dd>");h+=!ready.load()?"Non noto":stableClosed.load()?"Chiuso":"Aperto";
     h+=F("</dd><dt>Ultima lettura Ariston</dt><dd>");h+=modeName(verified.mode);
     h+=F("</dd><dt>Data ultima lettura</dt><dd>");h+=verified.mode>=0?timeLabel(time_t(verified.at)):"Mai in questo avvio";
-    h+=F("</dd><dt>Richiesta dal contatto</dt><dd>");h+=enabled.load()&&ready.load()?modeName(stableClosed.load()?0:1):"Non attiva / non nota";
+    h+=F("</dd><dt>Richiesta dal contatto</dt><dd>");h+=operational.load()&&ready.load()?modeName(stableClosed.load()?0:1):"Non attiva / non nota";
     h+=F("</dd><dt>Comunicazione</dt><dd>");h+=pendingOrBusy()?"In corso":"In attesa";
     h+=F("</dd><dt>Wi-Fi</dt><dd>");
     if(WiFi.status()==WL_CONNECTED){h+=String(WiFi.RSSI());h+=" dBm";}else h+="Non connesso";
     h+=F("</dd></dl><p><small>La lettura Ariston e storica, non in tempo reale.</small></p><p><strong>Ultimo esito: </strong>");h+=lastStatus;h+="</p>";
-    bool differs=enabled.load()&&ready.load()&&mismatch(verified.mode,stableClosed.load()?0:1);
+    bool differs=operational.load()&&ready.load()&&mismatch(verified.mode,stableClosed.load()?0:1);
     if(issue||differs){
         h+=F("<p style='color:#9a4700'><strong>Possibile disallineamento</strong><br>Un evento non e stato confermato oppure l ultima lettura differisce dal contatto. Verificare lo stato prima di riallineare.</p>");
-    }else if(enabled.load()&&verified.mode<0)h+=F("<p><small>Stato caldaia non verificato in questo avvio.</small></p>");
+    }else if(operational.load()&&verified.mode<0)h+=F("<p><small>Stato caldaia non verificato in questo avvio.</small></p>");
     bool busy=pendingOrBusy(), online=WiFi.status()==WL_CONNECTED;
     h+=form("/test","action","read","Verifica stato Ariston",false,busy||!online);
-    h+=form("/align","action","align","Riallinea caldaia",false,busy||!online||!enabled.load()||!ready.load()||rawClosed()!=stableClosed.load());
-    h+=F("<p><small>Riallinea invia un comando esplicito solo in Inverno, se necessario. Non riattiva una caldaia Spenta.</small></p><a href='/'>Aggiorna pagina</a></section><section><h2>Diagnostica</h2>");
+    h+=form("/align","action","align","Riallinea caldaia",false,busy||!online||!operational.load()||!ready.load()||rawClosed()!=stableClosed.load());
+    h+=F("<p><small>Riallinea invia un comando esplicito se necessario. Non riattiva una caldaia Spenta.</small></p><a href='/'>Aggiorna pagina</a></section><section><h2>Diagnostica</h2>");
     h+=F("<dl><dt>RAM libera</dt><dd>");h+=String(ESP.getFreeHeap());h+=F(" byte</dd><dt>RAM minima</dt><dd>");h+=String(ESP.getMinFreeHeap());
     h+=F(" byte</dd><dt>Blocco libero maggiore</dt><dd>");h+=String(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));h+=F(" byte</dd><dt>Stack worker minimo</dt><dd>");
     if(workerStackMin.load())h+=String(workerStackMin.load());else h+="Non misurato";
@@ -320,25 +316,11 @@ void dashboard(){
 void firmwarePage(){
     if(!authorized())return;
     String h=pageStart("Aggiornamento firmware");
-    h+=F("<section><p>Solo in stagione estiva. Caricare esclusivamente il firmware.bin compilato per questa centralina da una fonte fidata.</p>");
-    if(!enabled.load()&&!pendingOrBusy()&&!restartRequested){
+    h+=F("<section><p>Aggiornare quando non ci sono operazioni Ariston in corso, preferibilmente a pompa ferma. Caricare esclusivamente il firmware.bin compilato per questa centralina da una fonte fidata.</p>");
+    if(!pendingOrBusy()&&!restartRequested){
         h+="<form method='post' enctype='multipart/form-data' action='/update?csrf="+adminCsrf+"'><input type='file' name='firmware' accept='.bin' required><button>Aggiorna firmware</button></form>";
-    }else h+=F("<p>Disabilita l'automazione e attendi la fine delle operazioni.</p>");
+    }else h+=F("<p>Attendi la fine delle operazioni in corso.</p>");
     h+=F("<p><a href='/'>Indietro</a></p></section>");sendHtml(h);
-}
-void changeSeason(){
-    if(!postAuthorized())return;
-    String mode=server.arg("mode");
-    if(mode!="summer"&&mode!="winter"){sendText(400,"Stagione non valida");return;}
-    bool next=mode=="winter";
-    if(next&&!queueHandle){sendText(503,"Worker non disponibile");return;}
-    if(next!=enabled.load()){
-        enabled=false;baseline();
-        if(!storageOk||!prefs.putBool("winter",next)){sendText(500,"Errore memoria: automazione disabilitata in RAM");return;}
-        enabled=next;
-        logEvent(next?"Stagione inverno: attendo nuova transizione":"Stagione estate: automazione disabilitata");
-    }
-    redirect();
 }
 void testCloud(){
     if(!postAuthorized())return;
@@ -349,7 +331,7 @@ void testCloud(){
 }
 void alignCloud(){
     if(!postAuthorized())return;
-    if(!enabled.load()||!ready.load()||pendingOrBusy()||WiFi.status()!=WL_CONNECTED||rawClosed()!=stableClosed.load()){
+    if(!operational.load()||!ready.load()||pendingOrBusy()||WiFi.status()!=WL_CONNECTED||rawClosed()!=stableClosed.load()){
         sendText(409,"Riallineamento non disponibile");return;
     }
     bool closed=stableClosed.load();uint32_t seq=++generation;
@@ -360,30 +342,41 @@ void alignCloud(){
 void uploadChunk(){
     HTTPUpload& u=server.upload();
     if(u.status==UPLOAD_FILE_START){
-        uploadAuthorized=localHost()&&server.authenticate("admin",adminPassword.c_str())&&tokenValid(true)&&!enabled.load()&&!pendingOrBusy()&&!restartRequested;
+        uploadAuthorized=localHost()&&server.authenticate("admin",adminPassword.c_str())&&tokenValid(true)&&!pendingOrBusy()&&!restartRequested;
         uploadOk=false;uploadStarted=false;
-        if(uploadAuthorized){uploadStarted=Update.begin(UPDATE_SIZE_UNKNOWN,U_FLASH);uploadOk=uploadStarted;}
+        if(uploadAuthorized){
+            uploadStarted=Update.begin(UPDATE_SIZE_UNKNOWN,U_FLASH);uploadOk=uploadStarted;
+            if(uploadStarted){
+                // WebServer handles the upload synchronously: no cloud job is pending.
+                // Reacquire contact after the upload, never replay a transition during it.
+                uploadHadBaseline=ready.load();uploadPreviousClosed=stableClosed.load();
+                if(operational.load() && (!uploadHadBaseline || rawClosed()!=uploadPreviousClosed))setIssue(true);
+                baseline();
+                logEvent("Aggiornamento firmware: acquisizione contatto sospesa");
+            }
+        }
     }else if(u.status==UPLOAD_FILE_WRITE && uploadStarted && uploadOk){
         if(Update.write(u.buf,u.currentSize)!=u.currentSize){uploadOk=false;Update.abort();}
     }else if(u.status==UPLOAD_FILE_END && uploadStarted){
         uploadOk=uploadOk && u.totalSize>0 && Update.end(true);
         if(!uploadOk)Update.abort();
+        if(operational.load() && uploadHadBaseline && rawClosed()!=uploadPreviousClosed)setIssue(true);
         uploadStarted=false;
     }else if(u.status==UPLOAD_FILE_ABORTED){
-        if(uploadStarted)Update.abort();
+        if(uploadStarted){Update.abort();if(operational.load() && uploadHadBaseline && rawClosed()!=uploadPreviousClosed)setIssue(true);}
         uploadStarted=false;uploadOk=false;uploadAuthorized=false;
     }
 }
 void uploadFinish(){
     if(!uploadAuthorized){sendText(403,"Aggiornamento non autorizzato");return;}
-    if(!uploadOk){sendText(400,"Firmware non valido o aggiornamento fallito");return;}
+    if(!uploadOk){uploadAuthorized=false;logEvent("Aggiornamento fallito: nuova acquisizione contatto");sendText(400,"Firmware non valido o aggiornamento fallito");return;}
     uploadOk=false;uploadAuthorized=false;
     logEvent("Firmware aggiornato: riavvio senza comandi");
     sendText(200,"Aggiornamento completato. Riavvio in corso.");scheduleRestart();
 }
 void resetConfig(){
     if(restartRequested)return;
-    enabled=false;baseline();
+    operational=false;baseline();
     // Preserve the recovery Wi-Fi password so BOOT reset needs no serial cable.
     if(storageOk && (!prefs.isKey("config")||prefs.remove("config"))){
         if(prefs.isKey("winter"))prefs.remove("winter");
@@ -426,7 +419,7 @@ void setup(){
     issue=storageOk&&prefs.getBool("issue",false);
     if(issue)lastStatus="Evento precedente non verificato (memoria persistente)";
     if(setupMode){
-        enabled=false;
+        operational=false;
         String apPassword=recoveryPassword;
         String apName="Ariston-Setup-"+String(uint32_t(ESP.getEfuseMac())&0xffff,HEX);
         if(!WiFi.softAP(apName.c_str(),apPassword.c_str()))Serial.println("Errore access point");
@@ -436,7 +429,8 @@ void setup(){
         server.on("/",HTTP_GET,setupPage);
         server.on("/setup",HTTP_POST,saveSetup);
     }else{
-        enabled=prefs.getBool("winter",false);
+        // Migration: the old seasonal setting no longer gates automation.
+        if(prefs.isKey("winter"))prefs.remove("winter");
         WiFi.setAutoReconnect(true);
         WiFi.setHostname(HOST);
         offlineSince=millis();
@@ -448,11 +442,10 @@ void setup(){
         if(!queueHandle||!resultQueue||xTaskCreate(cloudWorker,"ariston",16384,nullptr,1,nullptr)!=pdPASS){
             if(queueHandle)vQueueDelete(queueHandle);
             if(resultQueue)vQueueDelete(resultQueue);
-            queueHandle=nullptr;resultQueue=nullptr;enabled=false;
-            logEvent("Worker non disponibile: automazione disabilitata");
-        }
+            queueHandle=nullptr;resultQueue=nullptr;operational=false;
+            logEvent("Worker non disponibile: automazione non disponibile");
+        }else operational=true;
         server.on("/",HTTP_GET,dashboard);
-        server.on("/season",HTTP_POST,changeSeason);
         server.on("/test",HTTP_POST,testCloud);
         server.on("/align",HTTP_POST,alignCloud);
         server.on("/config",HTTP_GET,configurationPage);
@@ -479,7 +472,7 @@ void loop(){
             if(connected){
                 if(recoveryActive){WiFi.softAPdisconnect(true);WiFi.mode(WIFI_STA);recoveryActive=false;}
                 // Do not turn a pre-reconnect candidate into a delayed write.
-                if(ready.load()&&rawClosed()!=stableClosed.load()&&enabled.load()){
+                if(ready.load()&&rawClosed()!=stableClosed.load()&&operational.load()){
                     setIssue(true);lastStatus="Possibile cambio contatto durante assenza rete";logEvent(lastStatus);
                 }
                 baseline();

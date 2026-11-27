@@ -23,9 +23,10 @@ int main() {
     Contact wrap(3000);
     assert(wrap.sample(false,0xffffff00)==Edge::None);
     assert(wrap.sample(false,2744)==Edge::None && wrap.ready());
-    Contact summer;
-    summer.sample(false,0); summer.sample(false,3000);
-    summer.sample(true,4000);
-    assert(targetFor(summer.sample(true,7000),false)==-1);
-    assert(targetFor(summer.sample(true,8000),true)==-1);
+    // A worker that is unavailable does not turn a past edge into a new one.
+    Contact unavailable;
+    unavailable.sample(false,0); unavailable.sample(false,3000);
+    unavailable.sample(true,4000);
+    assert(targetFor(unavailable.sample(true,7000),false)==-1);
+    assert(targetFor(unavailable.sample(true,8000),true)==-1);
 }
