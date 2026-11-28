@@ -19,13 +19,17 @@ Non richiede Home Assistant, Raspberry Pi, MQTT o altri dispositivi intermedi. U
 
 ## Come funziona
 
-| Evento | Azione |
-|---|---|
-| Contatto aperto → chiuso (pompa ON) | Modalità Estate — PlantMode 0 |
-| Contatto chiuso → aperto (pompa OFF) | Modalità Inverno — PlantMode 1 |
-| Accensione o riavvio | Lettura dello stato, nessun cambio modalità |
-| Riconnessione Wi-Fi | Nuova acquisizione del contatto, nessun recupero dei comandi persi |
-| Aggiornamento automatico | Sola lettura dopo 60 minuti dall'ultima lettura riuscita |
+Sono disponibili due varianti dello stesso firmware: **Normale** e **Invertita**. Scegliere in base allo stato effettivo del contatto quando la pompa è in funzione.
+
+| Evento | Normale | Invertita |
+|---|---|---|
+| Contatto aperto → chiuso | Estate (0), pompa ON | Inverno (1), pompa OFF |
+| Contatto chiuso → aperto | Inverno (1), pompa OFF | Estate (0), pompa ON |
+| Accensione o riavvio | Sola lettura | Sola lettura |
+| Riconnessione Wi-Fi | Nuova acquisizione, nessun recupero comandi | Nuova acquisizione, nessun recupero comandi |
+| Aggiornamento automatico | Sola lettura ogni ora | Sola lettura ogni ora |
+
+La dashboard indica la variante installata; lo stato fisico Aperto/Chiuso resta invariato, mentre lo stato dedotto della pompa e la modalità richiesta seguono la variante. Anche il riallineamento manuale utilizza la stessa logica. Per passare da una variante all'altra basta un aggiornamento OTA: non viene inviato un comando al riavvio.
 
 Le variazioni del contatto devono rimanere stabili per almeno 3 secondi. Prima di ogni cambio modalità vengono letti lo stato e le opzioni disponibili; dopo il comando viene verificato il risultato sul cloud. Se la caldaia è già nella modalità richiesta, non viene inviata alcuna scrittura. La caldaia impostata manualmente su Spenta o su una modalità diversa da Estate/Inverno non viene riattivata automaticamente.
 
@@ -41,11 +45,11 @@ Il polling è esclusivamente in lettura: non riallinea automaticamente la caldai
 
 - ESP32 classico con modulo ESP32-WROOM-32 e flash da 4 MB.
 - Alimentazione USB 5 V.
-- Contatto pulito normalmente aperto (NO) del relè della pompa.
+- Contatto pulito del relè della pompa, con logica normale o invertita.
 
 | Contatto relè | ESP32 |
 |---|---|
-| NO | GPIO27 |
+| NO oppure NC (secondo il relè e la variante scelta) | GPIO27 |
 | COM | GND |
 
 L'ingresso GPIO27 utilizza il pull-up interno a 3,3 V. Per collegamenti brevi e poco disturbati non è necessaria una resistenza esterna.
@@ -56,11 +60,12 @@ L'ingresso GPIO27 utilizza il pull-up interno a 3,3 V. Per collegamenti brevi e 
 
 Scaricare i file dalla [release più recente](https://github.com/paolofaz/ariston-termocamino-esp32/releases/latest).
 
-| File | Utilizzo |
-|---|---|
-| `ariston-termocamino-factory.bin` | Prima installazione USB, indirizzo 0x0 |
-| `firmware.bin` | Aggiornamento OTA, conserva le impostazioni |
-| `SHA256SUMS.txt` | Checksum SHA-256 dei binari |
+| Utilizzo | Normale | Invertita |
+|---|---|---|
+| Prima installazione USB, 0x0 | `ariston-termocamino-factory.bin` | `ariston-termocamino-factory-inverted.bin` |
+| Aggiornamento OTA | `firmware.bin` | `firmware-inverted.bin` |
+
+`SHA256SUMS.txt` contiene i checksum di tutti i binari.
 
 ### Prima installazione tramite USB
 
@@ -76,7 +81,7 @@ Con esptool 5, dalla cartella contenente il file BIN:
 esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x0 ariston-termocamino-factory.bin
 ```
 
-Sostituire la porta con quella effettiva. Con esptool 4 utilizzare `esptool.py` e `write_flash`.
+Per la variante invertita sostituire il nome del BIN con `ariston-termocamino-factory-inverted.bin`. Sostituire la porta con quella effettiva. Con esptool 4 utilizzare `esptool.py` e `write_flash`.
 
 Il file factory include bootloader, tabella delle partizioni, inizializzazione OTA e applicazione. **Non utilizzarlo per aggiornamenti ordinari:** può sovrascrivere le aree di configurazione. Il file factory resta da verificare su hardware reale.
 
@@ -93,7 +98,7 @@ Non è richiesta una password di accesso alla dashboard. L'automazione si attiva
 
 ### Aggiornamento OTA
 
-Scaricare il solo `firmware.bin` dalla sezione Releases. Aprire **Aggiornamento firmware** nella dashboard, attendere che non ci siano operazioni in corso e caricare il file, preferibilmente a pompa ferma. Le credenziali Wi-Fi e Ariston vengono conservate.
+Scaricare dalla sezione Releases il file OTA della variante desiderata: `firmware.bin` (normale) o `firmware-inverted.bin` (invertita). Aprire **Aggiornamento firmware** nella dashboard, attendere che non ci siano operazioni in corso e caricare il file, preferibilmente a pompa ferma. Le credenziali Wi-Fi e Ariston vengono conservate.
 
 Durante il caricamento il campionamento del contatto è sospeso; al termine viene acquisito nuovamente senza recuperare gli eventi persi. Non utilizzare il file factory via OTA. In caso di problemi, con la tabella delle partizioni di questo progetto è possibile ripristinare il solo firmware via USB, senza cancellare la flash, scrivendo entrambi gli slot:
 
@@ -101,9 +106,11 @@ Durante il caricamento il campionamento del contatto è sospeso; al termine vien
 esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x10000 firmware.bin 0x1f0000 firmware.bin
 ```
 
+Per il recupero USB della variante invertita sostituire entrambi i riferimenti a `firmware.bin` nel comando precedente con `firmware-inverted.bin`.
+
 ## Dashboard web
 
-La dashboard mostra lo stato della pompa e del contatto, l'ultima modalità osservata sul cloud Ariston con data e ora, la modalità richiesta dal contatto, la connessione Wi-Fi e lo stato delle comunicazioni.
+La dashboard identifica la variante Normale o Invertita e mostra lo stato della pompa e del contatto, l'ultima modalità osservata sul cloud Ariston con data e ora, la modalità richiesta dal contatto, la connessione Wi-Fi e lo stato delle comunicazioni.
 
 - **Verifica stato Ariston:** lettura manuale, senza cambio modalità.
 - **Riallinea caldaia:** singolo comando esplicito, solo se necessario e consentito dalla modalità corrente.
@@ -142,14 +149,14 @@ A dispositivo già avviato, tenere premuto BOOT per 10 secondi e rilasciarlo, op
 uv tool install --python 3.12 --with certifi==2026.11.20 --with cryptography==50.0.2 platformio==6.1.18
 git clone https://github.com/paolofaz/ariston-termocamino-esp32.git
 cd ariston-termocamino-esp32
-pio run
-pio run -t upload
+pio run -e esp32dev
+pio run -e esp32dev -t upload
 pio device monitor
 ```
 
-Se PlatformIO è già installato tramite uv, utilizzare `uv tool install --force` con gli stessi argomenti. Il bundle delle CA TLS viene generato durante la compilazione. Il firmware OTA è disponibile in `.pio/build/esp32dev/firmware.bin`.
+Se PlatformIO è già installato tramite uv, utilizzare `uv tool install --force` con gli stessi argomenti. Il bundle delle CA TLS viene generato durante la compilazione. Per compilare o caricare la variante invertita usare `-e esp32dev-inverted` al posto di `-e esp32dev`. Il firmware OTA è in `.pio/build/esp32dev/firmware.bin` oppure `.pio/build/esp32dev-inverted/firmware.bin` (rinominato nella release).
 
-GitHub Actions esegue i test della logica di contatto, del flusso di controllo, del parser PlantMode e della temporizzazione del polling, quindi compila e prepara i binari. Per pubblicare una nuova versione, aggiornare `VERSION` e avviare Build ESP32 con l'opzione `publish_release`, oppure includere `[release]` nel messaggio del commit su main. Le release esistenti non vengono sovrascritte.
+GitHub Actions esegue i test della logica di contatto, del flusso di controllo, del parser PlantMode e della temporizzazione del polling, quindi compila e prepara i binari di entrambe le varianti. La mappatura del contatto è verificata dai test in entrambe le polarità. Per pubblicare una nuova versione, aggiornare `VERSION` e avviare Build ESP32 con l'opzione `publish_release`, oppure includere `[release]` nel messaggio del commit su main. Le release esistenti non vengono sovrascritte.
 
 ## Sicurezza e limiti
 
@@ -160,4 +167,4 @@ GitHub Actions esegue i test della logica di contatto, del flusso di controllo, 
 - Il firmware non è real-time e non costituisce un interblocco di sicurezza. Eventuali esclusioni necessarie tra caldaia e termocamino devono essere realizzate localmente da un tecnico qualificato, indipendentemente da Internet.
 - L'OTA non prevede verifica crittografica della firma o rollback automatico. Utilizzare esclusivamente binari fidati del progetto.
 
-Lettura e transizioni Estate/Inverno sono state verificate su hardware reale. Il polling automatico, il recupero Wi-Fi e il funzionamento prolungato richiedono ulteriore verifica sul dispositivo.
+Lettura e transizioni Estate/Inverno sono state verificate su hardware reale. La variante invertita, il polling automatico, il recupero Wi-Fi e il funzionamento prolungato richiedono ulteriore verifica sul dispositivo.

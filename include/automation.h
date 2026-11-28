@@ -25,7 +25,15 @@ public:
     bool ready() const { return initialized_; }
     bool closed() const { return stable_; }
 };
+#ifndef CONTACT_INVERTED
+#define CONTACT_INVERTED 0
+#endif
+static_assert(CONTACT_INVERTED==0 || CONTACT_INVERTED==1,"Invalid contact polarity");
+constexpr bool InvertedContact=CONTACT_INVERTED==1;
+// Keep physical contact state separate from inferred pump state.
+constexpr bool pumpOn(bool closed) { return closed!=InvertedContact; }
+constexpr int targetForContact(bool closed) { return pumpOn(closed)?0:1; }
 inline int targetFor(Edge edge, bool operational) {
     if (!operational || edge == Edge::None) return -1;
-    return edge == Edge::Closed ? 0 : 1;
+    return targetForContact(edge==Edge::Closed);
 }

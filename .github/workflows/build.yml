@@ -19,22 +19,35 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install platformio==6.1.18 certifi==2026.11.20 cryptography==50.0.2
-      - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test
+      - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -DCONTACT_INVERTED=0 test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test
+      - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -DCONTACT_INVERTED=1 test/contact_test.cpp -o /tmp/contact-test-inverted && /tmp/contact-test-inverted
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/control_flow_test.cpp -o /tmp/control-flow-test && /tmp/control-flow-test
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/poll_schedule_test.cpp -o /tmp/poll-schedule-test && /tmp/poll-schedule-test
-      - run: pio run
+      - run: pio run -e esp32dev
+      - run: pio run -e esp32dev-inverted
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I.pio/libdeps/esp32dev/ArduinoJson/src test/mode_parser_test.cpp -o /tmp/mode-parser-test && /tmp/mode-parser-test
       - name: Package complete first-install binary
         run: |
+          set -euo pipefail
           mkdir -p dist
-          cp .pio/build/esp32dev/firmware.bin dist/firmware.bin
-          python "$HOME/.platformio/packages/tool-esptoolpy/esptool.py" --chip esp32 merge_bin \
-            -o dist/ariston-termocamino-factory.bin \
-            --flash_mode dio --flash_freq 40m --flash_size 4MB \
-            0x1000 .pio/build/esp32dev/bootloader.bin \
-            0x8000 .pio/build/esp32dev/partitions.bin \
-            0xe000 "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" \
-            0x10000 .pio/build/esp32dev/firmware.bin
+          for variant in normal inverted; do
+            if [ "$variant" = normal ]; then
+              env=esp32dev
+              suffix=""
+            else
+              env=esp32dev-inverted
+              suffix="-inverted"
+            fi
+            build=".pio/build/$env"
+            cp "$build/firmware.bin" "dist/firmware$suffix.bin"
+            python "$HOME/.platformio/packages/tool-esptoolpy/esptool.py" --chip esp32 merge_bin \
+              -o "dist/ariston-termocamino-factory$suffix.bin" \
+              --flash_mode dio --flash_freq 40m --flash_size 4MB \
+              0x1000 "$build/bootloader.bin" \
+              0x8000 "$build/partitions.bin" \
+              0xe000 "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" \
+              0x10000 "$build/firmware.bin"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: ariston-termocamino-esp32
@@ -64,15 +77,25 @@ jobs:
             echo "Release $tag already exists; refusing to overwrite assets."
             exit 0
           fi
-          (cd dist && sha256sum firmware.bin ariston-termocamino-factory.bin > SHA256SUMS.txt)
+          (cd dist && sha256sum *.bin > SHA256SUMS.txt)
           cat > /tmp/release-notes.md <<'EOF'
           Firmware ESP32-WROOM-32 (4 MB).
           
-          - `firmware.bin`: aggiornamento OTA, conserva le impostazioni.
-          - `ariston-termocamino-factory.bin`: prima installazione USB, indirizzo 0x0.
-          - `SHA256SUMS.txt`: checksum dei due file.
+          | Variante | Contatto chiuso | Contatto aperto |
+          |---|---|---|
+          | Normale | Estate | Inverno |
+          | Invertita | Inverno | Estate |
+
+          - `firmware.bin`: OTA normale.
+          - `firmware-inverted.bin`: OTA invertito.
+          - `ariston-termocamino-factory.bin`: prima installazione USB normale, indirizzo 0x0.
+          - `ariston-termocamino-factory-inverted.bin`: prima installazione USB invertita, indirizzo 0x0.
+          - `SHA256SUMS.txt`: checksum dei quattro binari.
+
+          OTA conserva le impostazioni. Nessuna scrittura all'avvio, anche cambiando variante.
+          La variante invertita richiede un collaudo sul relè reale.
           
           La pubblicazione avviene solo dopo compilazione e test automatici riusciti.
           Per configurazione, collegamenti, funzionalità e limiti consultare il README.
           EOF
-          gh release create "$tag" --target "$GITHUB_SHA" --title "Ariston Termocamino ESP32 $version" --notes-file /tmp/release-notes.md dist/firmware.bin dist/ariston-termocamino-factory.bin dist/SHA256SUMS.txt
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Ariston Termocamino ESP32 $version" --notes-file /tmp/release-notes.md dist/*.bin dist/SHA256SUMS.txt

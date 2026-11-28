@@ -17,7 +17,7 @@ namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="1.0.0";
+constexpr char VERSION[]="1.0.1";
 Preferences prefs;
 WebServer server(80);
 AristonConfig ariston;
@@ -130,7 +130,7 @@ void collectResults(){
         if(c.event.target>=0) setIssue(!satisfied(r.outcome));
         else if(r.outcome==Outcome::ReadOk && operational.load() && ready.load() &&
                 rawClosed()==stableClosed.load() &&
-                r.observation.mode==(stableClosed.load()?0:1)) setIssue(false);
+                r.observation.mode==(targetForContact(stableClosed.load()))) setIssue(false);
     }
 }
 bool enqueue(Event e){
@@ -308,14 +308,14 @@ void saveConfiguration(){
 void dashboard(){
     if(!requireLocal())return;
     String h=pageStart("Ariston Termocamino");
-    h+=F("<small>Centralina autonoma ESP32 | Firmware ");h+=VERSION;h+=F("</small><section><h2>Stato</h2><dl><dt>Automazione</dt><dd>");
+    h+=F("<small>Centralina autonoma ESP32 | Firmware ");h+=VERSION;h+=InvertedContact?" (Invertito)":" (Normale)";h+=F("</small><section><h2>Stato</h2><dl><dt>Automazione</dt><dd>");
     h+=operational.load()?"Attiva":"Non disponibile";
     h+=F("</dd><dt>Pompa</dt><dd>");
-    h+=!ready.load()?"Acquisizione":stableClosed.load()?"Accesa":"Spenta";
+    h+=!ready.load()?"Acquisizione":pumpOn(stableClosed.load())?"Accesa":"Spenta";
     h+=F("</dd><dt>Contatto</dt><dd>");h+=!ready.load()?"Non noto":stableClosed.load()?"Chiuso":"Aperto";
     h+=F("</dd><dt>Ultima lettura Ariston</dt><dd>");h+=modeName(verified.mode);
     h+=F("</dd><dt>Data ultima lettura</dt><dd>");h+=verified.mode>=0?timeLabel(time_t(verified.at)):"Mai in questo avvio";
-    h+=F("</dd><dt>Richiesta dal contatto</dt><dd>");h+=operational.load()&&ready.load()?modeName(stableClosed.load()?0:1):"Non attiva / non nota";
+    h+=F("</dd><dt>Richiesta dal contatto</dt><dd>");h+=operational.load()&&ready.load()?modeName(targetForContact(stableClosed.load())):"Non attiva / non nota";
     h+=F("</dd><dt>Comunicazione</dt><dd>");h+=pendingOrBusy()?"In corso":"In attesa";
     h+=F("</dd><dt>Wi-Fi</dt><dd>");
     if(WiFi.status()==WL_CONNECTED){h+=String(WiFi.RSSI());h+=" dBm";}else h+="Non connesso";
@@ -334,7 +334,7 @@ void dashboard(){
         else {h+=String((remaining+59999u)/60000u);h+=F(" min circa");}
     }
     h+=F(" (sola lettura)</small></p>");
-    bool differs=operational.load()&&ready.load()&&mismatch(verified.mode,stableClosed.load()?0:1);
+    bool differs=operational.load()&&ready.load()&&mismatch(verified.mode,targetForContact(stableClosed.load()));
     if(issue||differs){
         h+=F("<p style='color:#9a4700'><strong>Possibile disallineamento</strong><br>Un evento non e stato confermato oppure l ultima lettura differisce dal contatto. Verificare lo stato prima di riallineare.</p>");
     }else if(operational.load()&&verified.mode<0)h+=F("<p><small>Prima lettura della caldaia non ancora disponibile.</small></p>");
@@ -363,7 +363,7 @@ void dashboard(){
 void firmwarePage(){
     if(!requireLocal())return;
     String h=pageStart("Aggiornamento firmware");
-    h+=F("<section><p>Aggiornare quando non ci sono operazioni Ariston in corso, preferibilmente a pompa ferma. Caricare esclusivamente il firmware.bin compilato per questa centralina da una fonte fidata.</p>");
+    h+=F("<section><p>Aggiornare quando non ci sono operazioni Ariston in corso, preferibilmente a pompa ferma. Caricare firmware.bin (normale) oppure firmware-inverted.bin (invertito), da una fonte fidata. Il cambio variante non invia comandi all avvio.</p>");
     if(!pendingOrBusy()&&!restartRequested){
         h+="<form method='post' enctype='multipart/form-data' action='/update?csrf="+csrf+"'><input type='file' name='firmware' accept='.bin' required><button>Aggiorna firmware</button></form>";
     }else h+=F("<p>Attendi la fine delle operazioni in corso.</p>");
@@ -383,7 +383,7 @@ void alignCloud(){
     }
     bool closed=stableClosed.load();uint32_t seq=++generation;
     setIssue(true);
-    if(!enqueue({seq,closed?0:1,closed})){lastStatus="Riallineamento non avviato";sendText(503,lastStatus);return;}
+    if(!enqueue({seq,targetForContact(closed),closed})){lastStatus="Riallineamento non avviato";sendText(503,lastStatus);return;}
     lastStatus="Riallineamento manuale in corso";logEvent(lastStatus);redirect();
 }
 void uploadChunk(){
