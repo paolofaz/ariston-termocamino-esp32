@@ -17,6 +17,7 @@ jobs:
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test
       - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude test/control_flow_test.cpp -o /tmp/control-flow-test && /tmp/control-flow-test
       - run: pio run
+      - run: c++ -std=c++17 -Wall -Wextra -Werror -Iinclude -I.pio/libdeps/esp32dev/ArduinoJson/src test/mode_parser_test.cpp -o /tmp/mode-parser-test && /tmp/mode-parser-test
       - name: Package complete first-install binary
         run: |
           mkdir -p dist

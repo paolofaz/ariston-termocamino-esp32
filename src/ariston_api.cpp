@@ -1,4 +1,5 @@
 #include "ariston_api.h"
+#include "mode_parser.h"
 #include "generated_ca.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -9,7 +10,7 @@
 namespace {
 constexpr char BASE[] = "https://www.ariston-net.remotethermo.com";
 constexpr size_t MAX_BODY = 48 * 1024;
-constexpr int BAD_JSON = -1001, OFFLINE = -1002, CLOCK = -1003, BAD_DATA = -1004, BLOCKED = -1005, CANCELLED = -1006, AUTH_BLOCKED = -1007;
+constexpr int BAD_JSON = -1001, OFFLINE = -1002, CLOCK = -1003, BAD_DATA = -1004, BLOCKED = -1005, CANCELLED = -1006, AUTH_BLOCKED = -1007, LOGIN_NOT_FOUND = -1008;
 class BoundedBody : public Stream {
 public:
     String data;
@@ -23,15 +24,6 @@ public:
     int peek() override { return -1; }
     void flush() override {}
 };
-int code(JsonVariantConst v) {
-    if (v.is<bool>()) return -1;
-    if (v.is<int>()) { int n = v.as<int>(); return n >= 0 && n <= 6 ? n : -1; }
-    if (v.is<const char*>()) {
-        const char* s = v.as<const char*>();
-        if (s && s[0] >= '0' && s[0] <= '6' && !s[1]) return s[0]-'0';
-    }
-    return -1;
-}
 bool authError(int n) { return n == 401 || n == 403 || n == 405; }
 bool safeId(const String& s) {
     if (s.isEmpty() || s.length() > 128) return false;
@@ -50,6 +42,7 @@ const char* errorMessage(int n) {
     if (n == CANCELLED) return "Evento superato: nessuna scrittura";
     if (n == AUTH_BLOCKED) return "Login rifiutato: pausa di 5 minuti";
     if (authError(n)) return "Ariston: autenticazione non riuscita";
+    if (n == LOGIN_NOT_FOUND) return "Ariston: login HTTP 404, verificare credenziali";
     if (n == 404) return "Ariston: endpoint non trovato (HTTP 404)";
     if (n == OFFLINE) return "Wi-Fi non disponibile";
     if (n == CLOCK) return "Orologio non sincronizzato: TLS non disponibile";
@@ -140,6 +133,7 @@ int AristonApi::login(const std::function<bool()>& valid) {
     JsonDocument body, reply;
     body["usr"]=cfg_.username; body["pwd"]=cfg_.password;
     int r=request("POST","/api/v2/accounts/login",&body,reply,&valid);
+    if(r==404){authBlocked_=true;authBlockedAt_=millis();return LOGIN_NOT_FOUND;}
     if (authError(r) || (r==200 && denied(reply))) {
         authBlocked_=true; authBlockedAt_=millis(); return 401;
     }
@@ -153,30 +147,34 @@ int AristonApi::login(const std::function<bool()>& valid) {
 int AristonApi::readMode(const String& plant,const JsonDocument& features,int& current,int target,bool& allowed,const std::function<bool()>* valid) {
     JsonDocument body, reply;
     body["useCache"]=false;
-    auto item=body["items"].to<JsonArray>().add<JsonObject>();
-    item["id"]="PlantMode"; item["zn"]=0;
+    // Same observed property set and zones as ha-ariston-cube make_main_request().
+    static const char* const plantIds[]={
+        "AutomaticThermoregulation","ChFlowSetpointTemp","ChFlowTemp","DhwMode",
+        "DhwStorageTemperature","DhwTemp","DhwTimeProgComfortTemp","DhwTimeProgEconomyTemp",
+        "HeatingCircuitPressure","IsFlameOn","OutsideTemp","PlantMode"};
+    static const char* const zoneIds[]={
+        "ZoneComfortTemp","ZoneDesiredTemp","ZoneEconomyTemp","ZoneHeatRequest","ZoneMeasuredTemp","ZoneMode"};
+    auto requested=body["items"].to<JsonArray>();
+    for(auto id:plantIds){auto item=requested.add<JsonObject>();item["id"]=id;item["zn"]=0;}
+    for(auto id:zoneIds){auto item=requested.add<JsonObject>();item["id"]=id;item["zn"]=1;}
     body["features"].set(features.as<JsonVariantConst>());
     if (body.overflowed()) return BAD_JSON;
     int r=request("POST","/api/v2/remote/dataItems/"+plant+"/get?umsys=si",&body,reply,valid);
     if (r!=200) return r;
-    auto items=reply["items"].as<JsonArrayConst>();
-    if (items.isNull()) {trace("Lettura PlantMode: items assente",BAD_DATA);return BAD_DATA;}
-    bool found=false;
-    for (JsonObjectConst row:items) {
-        if (strcmp(row["id"] | "", "PlantMode") != 0) continue;
-        JsonVariantConst zone=row["zone"];
-        if (zone.isNull()) zone=row["zn"];
-        if (code(zone)!=0) continue;
-        if (found) {trace("Lettura PlantMode: duplicato",BAD_DATA);return BAD_DATA;}
-        found=true;
-        current=code(row["value"]);
-        auto options=row["options"].as<JsonArrayConst>();
-        if (current<0 || options.isNull() || !options.size()) {trace("Lettura PlantMode: valore/opzioni non validi",BAD_DATA);return BAD_DATA;}
-        allowed=false;
-        for (auto v:options) if (code(v)==target) allowed=true;
+    auto mode=parsePlantMode(reply.as<JsonVariantConst>());
+    if(mode.error){
+        char stage[96];snprintf(stage,sizeof(stage),"Lettura PlantMode: %s",mode.error);
+        trace(stage,BAD_DATA);
+        return BAD_DATA;
     }
-    if(!found)trace("Lettura PlantMode: zona 0 assente",BAD_DATA);
-    return found?200:BAD_DATA;
+    current=mode.current;
+    allowed=mode.allows(target);
+    char stage[112];
+    snprintf(stage,sizeof(stage),"PlantMode=%d | opzioni %s (mask 0x%02x)",current,
+        mode.optionsPresent?"presenti":"assenti",mode.optionsMask);
+    trace(stage,200);
+    // A valid state is useful even if options are absent; writes still require an explicit allowed target.
+    return 200;
 }
 
 int AristonApi::prepare(String& plant,JsonDocument& features,int& current,int target,bool& allowed,const std::function<bool()>& valid) {

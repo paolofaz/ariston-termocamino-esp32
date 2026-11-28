@@ -1,6 +1,6 @@
 # Ariston Termocamino ESP32
 
-**Versione sperimentale 0.1.7-dev. Non installare definitivamente prima del collaudo.**
+**Versione sperimentale 0.1.8-dev. Non installare definitivamente prima del collaudo.**
 
 Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Ariston NET con Cube S e un termocamino. Nessun Home Assistant, Raspberry o broker MQTT necessario. Utilizza le API cloud non ufficiali già utilizzate da [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
 
@@ -51,7 +51,7 @@ Con esptool 5: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0
 
 ## Recupero e diagnostica
 
-La dashboard mostra la fase API, il codice HTTP/trasporto, il codice TLS e la memoria libera dell’ultima operazione; il monitor seriale a 115200 registra ogni richiesta senza URL completi, token, credenziali o corpi delle risposte. Usare Verifica stato Ariston per diagnosticare senza scritture. Le richieste includono sempre ar.authToken (vuoto prima del login) e Accept: */*, come nel client Home Assistant. La correzione degli header è da verificare su hardware in seguito a HTTP 404 al login.
+La dashboard mostra la fase API, il codice HTTP/trasporto, il codice TLS e la memoria libera dell’ultima operazione; il monitor seriale a 115200 registra ogni richiesta senza URL completi, token, credenziali o corpi delle risposte. Usare Verifica stato Ariston per diagnosticare senza scritture. Le richieste includono sempre ar.authToken (vuoto prima del login) e Accept: */*, come nel client Home Assistant. Un HTTP 404 durante il login può indicare credenziali errate, come verificato dal test sul Mac; si applica una pausa di 5 minuti senza ritentare automaticamente. La lettura usa lo stesso insieme di proprietà di ha-ariston-cube e accetta codici numerici interi, float integrali o stringhe di una cifra. Una lettura valida senza opzioni è mostrata, ma non autorizza scritture verso modalità non dichiarate. Il parser è coperto da test host con ArduinoJson.
 
 - Il pulsante **Riallinea caldaia** avvia una singola operazione esplicita verso la modalità richiesta dal contatto stabile. Rispetta il limite delle modalità 0/1, non scrive se la caldaia è già allineata e non riattiva una caldaia spenta. Non esiste un riallineamento automatico.
 - Un evento in corso, perso o non confermato lascia un avviso persistente in NVS. Non vengono salvati comandi da eseguire al boot. Una successiva operazione riuscita o una lettura esplicita corrispondente al contatto può cancellare l'avviso. L'ultima osservazione Ariston è mantenuta in RAM anche quando una chiamata fallisce; è storica, con data, e non prova lo stato attuale della caldaia. Dopo riavvio la lettura è sconosciuta fino alla prossima operazione.
