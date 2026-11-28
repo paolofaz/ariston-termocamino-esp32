@@ -10,13 +10,14 @@
 #include <atomic>
 #include <time.h>
 #include "automation.h"
+#include "poll_schedule.h"
 #include "ariston_api.h"
 
 namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="0.1.8-dev";
+constexpr char VERSION[]="1.0.0";
 Preferences prefs;
 WebServer server(80);
 AristonConfig ariston;
@@ -28,6 +29,9 @@ bool bootArmed=false, bootPressed=false, noisyLogged=false;
 bool issue=false;
 const char* lastStatus="Nessun comando dall avvio";
 Observation verified{};
+PollSchedule pollSchedule;
+const char* lastPollStatus="In attesa della prima lettura automatica";
+char lastPollDetail[192]{};
 uint32_t attemptedCount=0, confirmedCount=0, errorCount=0;
 std::atomic<uint32_t> workerStackMin{0};
 bool setupMode=false, storageOk=false, restartRequested=false;
@@ -39,7 +43,7 @@ QueueHandle_t queueHandle=nullptr, resultQueue=nullptr;
 bool previouslyConnected=false;
 bool uploadAuthorized=false, uploadOk=false, uploadStarted=false, uploadHadBaseline=false, uploadPreviousClosed=false;
 String serialLine;
-struct Event { uint32_t seq; int target; bool closed; };
+struct Event { uint32_t seq; int target; bool closed; bool automaticRead=false; };
 struct Completed { Event event; AristonResult result; char detail[192]; };
 char lastApiDetail[192]{};
 struct Log { uint32_t seconds; time_t epoch; const char* text; };
@@ -75,6 +79,7 @@ void baseline() {
 bool pendingOrBusy(){return outstanding.load()!=0;}
 bool validEvent(const Event& e) {
     if(generation.load()!=e.seq || WiFi.status()!=WL_CONNECTED) return false;
+    if(e.automaticRead && (!ready.load() || rawClosed()!=stableClosed.load()))return false;
     if(e.target<0) return true;
     return operational.load() && ready.load() && stableClosed.load()==e.closed && rawClosed()==e.closed;
 }
@@ -107,11 +112,24 @@ void collectResults(){
         if(r.outcome==Outcome::Confirmed)++confirmedCount;
         if(r.outcome==Outcome::Rejected||r.outcome==Outcome::NotSent||r.outcome==Outcome::Uncertain)++errorCount;
         logEvent(r.message);
-        if(c.event.seq!=generation.load()||restartRequested)continue;
-        snprintf(lastApiDetail,sizeof(lastApiDetail),"%s",c.detail);
-        lastStatus=r.message;
+        bool current=c.event.seq==generation.load()&&!restartRequested;
+        if(c.event.automaticRead){
+            lastPollStatus=current?r.message:"Lettura automatica superata da un nuovo evento";
+            snprintf(lastPollDetail,sizeof(lastPollDetail),"%s",c.detail);
+            pollSchedule.completed(millis(),current&&r.outcome==Outcome::ReadOk);
+        }
+        if(!current)continue;
+        if(!c.event.automaticRead){
+            snprintf(lastApiDetail,sizeof(lastApiDetail),"%s",c.detail);
+            lastStatus=r.message;
+            // A manual read or a confirmed observation postpones the next periodic read.
+            // Failed/uncertain operations get a read-only check after the retry interval.
+            pollSchedule.completed(millis(),r.observation.mode>=0&&
+                r.outcome!=Outcome::Uncertain&&r.outcome!=Outcome::Rejected&&r.outcome!=Outcome::NotSent);
+        }
         if(c.event.target>=0) setIssue(!satisfied(r.outcome));
         else if(r.outcome==Outcome::ReadOk && operational.load() && ready.load() &&
+                rawClosed()==stableClosed.load() &&
                 r.observation.mode==(stableClosed.load()?0:1)) setIssue(false);
     }
 }
@@ -121,6 +139,19 @@ bool enqueue(Event e){
     if(xQueueSend(queueHandle,&e,0)==pdTRUE)return true;
     --outstanding;
     return false;
+}
+void automaticRead(){
+    if(!operational.load()||!ready.load()||restartRequested||pendingOrBusy()||
+       WiFi.status()!=WL_CONNECTED||time(nullptr)<1735689600||
+       rawClosed()!=stableClosed.load()||!pollSchedule.due(millis()))return;
+    if(enqueue({generation.load(),-1,false,true})){
+        lastPollStatus="Lettura automatica in corso";
+        lastPollDetail[0]=0;
+        logEvent("Lettura automatica Ariston avviata (sola lettura)");
+    }else{
+        lastPollStatus="Worker non disponibile";
+        pollSchedule.completed(millis(),false);
+    }
 }
 void readContact() {
     Edge edge=contact.sample(rawClosed(),millis());
@@ -290,10 +321,23 @@ void dashboard(){
     if(WiFi.status()==WL_CONNECTED){h+=String(WiFi.RSSI());h+=" dBm";}else h+="Non connesso";
     h+=F("</dd></dl><p><small>La lettura Ariston e storica, non in tempo reale.</small></p><p><strong>Ultimo esito: </strong>");h+=lastStatus;h+="</p>";
     if(lastApiDetail[0]){h+=F("<p><small>Diagnostica API: ");h+=lastApiDetail;h+=F("</small></p>");}
+    h+=F("<p><strong>Aggiornamento automatico: </strong>");h+=lastPollStatus;h+=F("</p>");
+    if(lastPollDetail[0]){h+=F("<p><small>");h+=lastPollDetail;h+=F("</small></p>");}
+    h+=F("<p><small>Prossima lettura automatica: ");
+    if(!operational.load())h+=F("non disponibile");
+    else if(WiFi.status()!=WL_CONNECTED)h+=F("in attesa del Wi-Fi");
+    else if(time(nullptr)<1735689600)h+=F("in attesa dell'ora NTP");
+    else if(pendingOrBusy())h+=F("dopo le operazioni in corso");
+    else {
+        uint32_t remaining=pollSchedule.remaining(millis());
+        if(!remaining)h+=F("a breve");
+        else {h+=String((remaining+59999u)/60000u);h+=F(" min circa");}
+    }
+    h+=F(" (sola lettura)</small></p>");
     bool differs=operational.load()&&ready.load()&&mismatch(verified.mode,stableClosed.load()?0:1);
     if(issue||differs){
         h+=F("<p style='color:#9a4700'><strong>Possibile disallineamento</strong><br>Un evento non e stato confermato oppure l ultima lettura differisce dal contatto. Verificare lo stato prima di riallineare.</p>");
-    }else if(operational.load()&&verified.mode<0)h+=F("<p><small>Stato caldaia non verificato in questo avvio.</small></p>");
+    }else if(operational.load()&&verified.mode<0)h+=F("<p><small>Prima lettura della caldaia non ancora disponibile.</small></p>");
     bool busy=pendingOrBusy(), online=WiFi.status()==WL_CONNECTED;
     h+=form("/test","action","read","Verifica stato Ariston",false,busy||!online);
     h+=form("/align","action","align","Riallinea caldaia",false,busy||!online||!operational.load()||!ready.load()||rawClosed()!=stableClosed.load());
@@ -500,7 +544,7 @@ void loop(){
             logEvent(recoveryActive?"Access point di recupero attivo":"Errore access point di recupero");
             if(recoveryActive){Serial.println(name);Serial.println(WiFi.softAPIP());}
         }
-        if(!restartRequested)readContact();
+        if(!restartRequested){readContact();automaticRead();}
     }
     server.handleClient();
     if(restartRequested && uint32_t(millis()-restartAt)>800 && !pendingOrBusy() && digitalRead(BOOT_PIN)==HIGH)ESP.restart();
