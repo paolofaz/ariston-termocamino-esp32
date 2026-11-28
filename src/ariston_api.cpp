@@ -57,18 +57,29 @@ const char* errorMessage(int n) {
 }
 }
 
+void AristonApi::trace(const char* stage,int status,int tlsError){
+    snprintf(diagnostic_,sizeof(diagnostic_),"%s | codice %d | TLS %d | heap %lu byte",
+             stage,status,tlsError,(unsigned long)ESP.getFreeHeap());
+    Serial.println(diagnostic_);
+}
+
 int AristonApi::request(const char* method, const String& path, const JsonDocument* body, JsonDocument& out,
                          const std::function<bool()>* valid, bool* attempted) {
     out.clear();
-    if (valid && !(*valid)()) return CANCELLED;
-    if (cooldown_ && uint32_t(millis()-blockedAt_) < cooldown_) return BLOCKED;
-    if (WiFi.status()!=WL_CONNECTED) return OFFLINE;
-    if (time(nullptr)<1735689600) return CLOCK;
+    const char* stage=path.endsWith("/login")?"Login":
+        path.endsWith("/lite")?"Lista impianti":
+        path.indexOf("/features?")>=0?"Features":
+        path.indexOf("/set?")>=0?"Scrittura PlantMode":"Lettura PlantMode";
+    auto fail=[&](int n){trace(stage,n);return n;};
+    if (valid && !(*valid)()) return fail(CANCELLED);
+    if (cooldown_ && uint32_t(millis()-blockedAt_) < cooldown_) return fail(BLOCKED);
+    if (WiFi.status()!=WL_CONNECTED) return fail(OFFLINE);
+    if (time(nullptr)<1735689600) return fail(CLOCK);
     WiFiClientSecure tls;
     tls.setCACertBundle(ARISTON_CA_BUNDLE);
     tls.setHandshakeTimeout(10);
     HTTPClient http;
-    if (!http.begin(tls, String(BASE)+path)) return -1;
+    if (!http.begin(tls, String(BASE)+path)) return fail(-1);
     http.setConnectTimeout(8000);
     http.setTimeout(10000);
     http.setReuse(false);
@@ -82,13 +93,13 @@ int AristonApi::request(const char* method, const String& path, const JsonDocume
         String payload;
         const size_t expected=measureJson(*body);
         if (!expected || expected>MAX_BODY || !payload.reserve(expected) ||
-            serializeJson(*body,payload)!=expected || payload.length()!=expected) { http.end(); return BAD_JSON; }
+            serializeJson(*body,payload)!=expected || payload.length()!=expected) { http.end(); return fail(BAD_JSON); }
         http.addHeader("Content-Type","application/json");
-        if (valid && !(*valid)()) { http.end(); return CANCELLED; }
+        if (valid && !(*valid)()) { http.end(); return fail(CANCELLED); }
         if (attempted) *attempted=true;
         status=http.POST(payload);
     } else {
-        if (valid && !(*valid)()) { http.end(); return CANCELLED; }
+        if (valid && !(*valid)()) { http.end(); return fail(CANCELLED); }
         status=http.GET();
     }
     if (status==429) {
@@ -102,13 +113,19 @@ int AristonApi::request(const char* method, const String& path, const JsonDocume
             seconds=retrySeconds>86400?86400:retrySeconds;
         blockedAt_=millis(); cooldown_=seconds*1000u;
     }
-    if (status<200 || status>=300) { http.end(); return status; }
-    if (http.getSize()>int(MAX_BODY)) { http.end(); return BAD_JSON; }
+    if (status<200 || status>=300) {
+        char tlsMessage[128]{};
+        int tlsError=status<0?tls.lastError(tlsMessage,sizeof(tlsMessage)):0;
+        trace(stage,status,tlsError);
+        http.end(); return status;
+    }
+    if (http.getSize()>int(MAX_BODY)) { http.end(); return fail(BAD_JSON); }
     BoundedBody response;
     const int written=http.writeToStream(&response);
     http.end();
     if (written<0 || size_t(written)!=response.data.length() ||
-        deserializeJson(out,response.data) || out.overflowed()) return BAD_JSON;
+        deserializeJson(out,response.data) || out.overflowed()) return fail(BAD_JSON);
+    trace(stage,status);
     throttles_=0; cooldown_=0;
     return 200;
 }
@@ -125,7 +142,7 @@ int AristonApi::login(const std::function<bool()>& valid) {
     }
     if (r!=200) return r;
     const char* t=reply["token"].as<const char*>();
-    if (!t || !*t || strlen(t)>8192) return BAD_DATA;
+    if (!t || !*t || strlen(t)>8192) {trace("Login: token assente/non valido",BAD_DATA);return BAD_DATA;}
     token_=t;
     return 200;
 }
@@ -140,21 +157,22 @@ int AristonApi::readMode(const String& plant,const JsonDocument& features,int& c
     int r=request("POST","/api/v2/remote/dataItems/"+plant+"/get?umsys=si",&body,reply,valid);
     if (r!=200) return r;
     auto items=reply["items"].as<JsonArrayConst>();
-    if (items.isNull()) return BAD_DATA;
+    if (items.isNull()) {trace("Lettura PlantMode: items assente",BAD_DATA);return BAD_DATA;}
     bool found=false;
     for (JsonObjectConst row:items) {
         if (strcmp(row["id"] | "", "PlantMode") != 0) continue;
         JsonVariantConst zone=row["zone"];
         if (zone.isNull()) zone=row["zn"];
         if (code(zone)!=0) continue;
-        if (found) return BAD_DATA;
+        if (found) {trace("Lettura PlantMode: duplicato",BAD_DATA);return BAD_DATA;}
         found=true;
         current=code(row["value"]);
         auto options=row["options"].as<JsonArrayConst>();
-        if (current<0 || options.isNull() || !options.size()) return BAD_DATA;
+        if (current<0 || options.isNull() || !options.size()) {trace("Lettura PlantMode: valore/opzioni non validi",BAD_DATA);return BAD_DATA;}
         allowed=false;
         for (auto v:options) if (code(v)==target) allowed=true;
     }
+    if(!found)trace("Lettura PlantMode: zona 0 assente",BAD_DATA);
     return found?200:BAD_DATA;
 }
 
@@ -166,21 +184,22 @@ int AristonApi::prepare(String& plant,JsonDocument& features,int& current,int ta
     int r=request("GET","/api/v2/remote/plants/lite",nullptr,list,&valid);
     if (r!=200) return r;
     auto arr=list.as<JsonArrayConst>();
-    if (arr.isNull() || !arr.size()) return BAD_DATA;
+    if (arr.isNull() || !arr.size()) {trace("Lista impianti: vuota/non valida",BAD_DATA);return BAD_DATA;}
     plant="";
     if (cfg_.plant.isEmpty() && arr.size()==1) plant=arr[0]["gwId"] | "";
     else if (!cfg_.plant.isEmpty()) {
         for (auto row:arr) if (cfg_.plant==String(row["gwId"] | "")) plant=cfg_.plant;
     }
-    if (!safeId(plant)) return BAD_DATA;
+    if (!safeId(plant)) {trace("Lista impianti: selezione non valida",BAD_DATA);return BAD_DATA;}
     list.clear();
     r=request("GET","/api/v2/remote/plants/"+plant+"/features?eagerMode=True",nullptr,features,&valid);
     if (r!=200) return r;
-    if (!features.is<JsonObject>() || !features.size()) return BAD_DATA;
+    if (!features.is<JsonObject>() || !features.size()) {trace("Features: risposta non valida",BAD_DATA);return BAD_DATA;}
     return readMode(plant,features,current,target,allowed,&valid);
 }
 
 AristonResult AristonApi::execute(int target,const std::function<bool()>& stillValid) {
+    diagnostic_[0]=0;
     String plant;
     JsonDocument features;
     auto prepareState=[&]() -> Preparation {

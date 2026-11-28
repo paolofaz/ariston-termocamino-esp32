@@ -16,7 +16,7 @@ namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="0.1.5-dev";
+constexpr char VERSION[]="0.1.6-dev";
 Preferences prefs;
 WebServer server(80);
 AristonConfig ariston;
@@ -40,7 +40,8 @@ bool previouslyConnected=false;
 bool uploadAuthorized=false, uploadOk=false, uploadStarted=false, uploadHadBaseline=false, uploadPreviousClosed=false;
 String serialLine;
 struct Event { uint32_t seq; int target; bool closed; };
-struct Completed { Event event; AristonResult result; };
+struct Completed { Event event; AristonResult result; char detail[192]; };
+char lastApiDetail[192]{};
 struct Log { uint32_t seconds; time_t epoch; const char* text; };
 constexpr size_t LOG_COUNT=32;
 Log logEntries[LOG_COUNT]{};
@@ -90,7 +91,8 @@ void cloudWorker(void*) {
         if(xQueueReceive(queueHandle,&e,portMAX_DELAY)!=pdTRUE) continue;
         auto result=api.execute(e.target,[&](){return validEvent(e);});
         workerStackMin=uxTaskGetStackHighWaterMark(nullptr);
-        Completed completed{e,result};
+        Completed completed{e,result,{}};
+        snprintf(completed.detail,sizeof(completed.detail),"%s",api.diagnostic());
         xQueueSend(resultQueue,&completed,portMAX_DELAY);
     }
 }
@@ -106,6 +108,7 @@ void collectResults(){
         if(r.outcome==Outcome::Rejected||r.outcome==Outcome::NotSent||r.outcome==Outcome::Uncertain)++errorCount;
         logEvent(r.message);
         if(c.event.seq!=generation.load()||restartRequested)continue;
+        snprintf(lastApiDetail,sizeof(lastApiDetail),"%s",c.detail);
         lastStatus=r.message;
         if(c.event.target>=0) setIssue(!satisfied(r.outcome));
         else if(r.outcome==Outcome::ReadOk && operational.load() && ready.load() &&
@@ -286,6 +289,7 @@ void dashboard(){
     h+=F("</dd><dt>Wi-Fi</dt><dd>");
     if(WiFi.status()==WL_CONNECTED){h+=String(WiFi.RSSI());h+=" dBm";}else h+="Non connesso";
     h+=F("</dd></dl><p><small>La lettura Ariston e storica, non in tempo reale.</small></p><p><strong>Ultimo esito: </strong>");h+=lastStatus;h+="</p>";
+    if(lastApiDetail[0]){h+=F("<p><small>Diagnostica API: ");h+=lastApiDetail;h+=F("</small></p>");}
     bool differs=operational.load()&&ready.load()&&mismatch(verified.mode,stableClosed.load()?0:1);
     if(issue||differs){
         h+=F("<p style='color:#9a4700'><strong>Possibile disallineamento</strong><br>Un evento non e stato confermato oppure l ultima lettura differisce dal contatto. Verificare lo stato prima di riallineare.</p>");

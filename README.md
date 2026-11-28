@@ -1,6 +1,6 @@
 # Ariston Termocamino ESP32
 
-**Versione sperimentale 0.1.5-dev. Non installare definitivamente prima del collaudo.**
+**Versione sperimentale 0.1.6-dev. Non installare definitivamente prima del collaudo.**
 
 Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Ariston NET con Cube S e un termocamino. Nessun Home Assistant, Raspberry o broker MQTT necessario. Utilizza le API cloud non ufficiali già utilizzate da [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
 
@@ -50,6 +50,8 @@ Con esptool 5: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0
 6. Attendere acquisizione iniziale. Con caldaia e impianto sorvegliati, aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi: i comandi sono reali. Controllare l’app ufficiale e gli ultimi eventi. Verificare anche riavvio e perdita Wi-Fi.
 
 ## Recupero e diagnostica
+
+La dashboard mostra la fase API, il codice HTTP/trasporto, il codice TLS e la memoria libera dell’ultima operazione; il monitor seriale a 115200 registra ogni richiesta senza URL completi, token, credenziali o corpi delle risposte. Usare Verifica stato Ariston per diagnosticare senza scritture.
 
 - Il pulsante **Riallinea caldaia** avvia una singola operazione esplicita verso la modalità richiesta dal contatto stabile. Rispetta il limite delle modalità 0/1, non scrive se la caldaia è già allineata e non riattiva una caldaia spenta. Non esiste un riallineamento automatico.
 - Un evento in corso, perso o non confermato lascia un avviso persistente in NVS. Non vengono salvati comandi da eseguire al boot. Una successiva operazione riuscita o una lettura esplicita corrispondente al contatto può cancellare l'avviso. L'ultima osservazione Ariston è mantenuta in RAM anche quando una chiamata fallisce; è storica, con data, e non prova lo stato attuale della caldaia. Dopo riavvio la lettura è sconosciuta fino alla prossima operazione.

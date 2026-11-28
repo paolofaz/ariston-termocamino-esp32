@@ -9,6 +9,8 @@ struct AristonConfig {
 class AristonApi {
     const AristonConfig& cfg_;
     String token_;
+    char diagnostic_[192]{};
+    void trace(const char* stage,int status,int tlsError=0);
     uint32_t blockedAt_ = 0, cooldown_ = 0;
     uint8_t throttles_ = 0;
     uint32_t authBlockedAt_=0;
@@ -19,6 +21,7 @@ class AristonApi {
     int prepare(String& plant, JsonDocument& features, int& current, int target, bool& allowed, const std::function<bool()>& valid);
     int readMode(const String& plant, const JsonDocument& features, int& current, int target, bool& allowed, const std::function<bool()>* valid=nullptr);
 public:
+    const char* diagnostic() const { return diagnostic_; }
     explicit AristonApi(const AristonConfig& cfg): cfg_(cfg) {}
     // target -1 is read-only. stillValid is rechecked immediately before the only control POST.
     AristonResult execute(int target, const std::function<bool()>& stillValid);
