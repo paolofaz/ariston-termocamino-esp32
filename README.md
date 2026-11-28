@@ -1,23 +1,142 @@
 # Ariston Termocamino ESP32
 
-**Versione 1.0.0. Lettura e cambio Estate/Inverno collaudati dall'utente sulla 0.1.8-dev; il nuovo polling automatico va verificato sul dispositivo.**
+[![Release](https://img.shields.io/github/v/release/paolofaz/ariston-termocamino-esp32)](https://github.com/paolofaz/ariston-termocamino-esp32/releases/latest)
+[![Build ESP32](https://github.com/paolofaz/ariston-termocamino-esp32/actions/workflows/build.yml/badge.svg)](https://github.com/paolofaz/ariston-termocamino-esp32/actions/workflows/build.yml)
 
-Centralina autonoma per ESP32-WROOM-32 (4 MB), sviluppata per una caldaia Ariston NET con Cube S e un termocamino. Nessun Home Assistant, Raspberry o broker MQTT necessario. Utilizza le API cloud non ufficiali già utilizzate da [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
+Centralina autonoma per gestire la modalità Estate/Inverno di una caldaia Ariston NET in base allo stato della pompa del termocamino. Progettata per ESP32-WROOM-32 con flash da 4 MB e collaudata per la lettura e il cambio modalità su una caldaia Ariston con Cube S.
 
-## Collegamento
+Non richiede Home Assistant, Raspberry Pi, MQTT o altri dispositivi intermedi. Utilizza le API cloud non ufficiali Ariston NET, come il progetto [ha-ariston-cube](https://github.com/paolofaz/ha-ariston-cube). Nessuna affiliazione con Ariston.
 
-Contatto pulito, normalmente aperto (NO), del relè della pompa: NO al GPIO27, COM a GND. L'ingresso usa INPUT_PULLUP a 3,3 V; non occorre una resistenza esterna per collegamenti brevi e in ambiente poco disturbato. **Mai collegare tensione esterna al GPIO, né il circuito della bobina o della pompa.** Verificare che il contatto sia realmente isolato e a potenziale libero e adatto a piccoli segnali; cavi lunghi o vicini alla rete elettrica possono richiedere un ingresso isolato. Alimentare l'ESP32 via USB 5 V.
+## Funzionalità
 
-| Evento stabile (3 s) | Azione |
+- Cambio automatico Estate/Inverno alla variazione stabile del contatto della pompa.
+- Lettura dello stato Ariston all'avvio e ogni ora, senza modificare la modalità della caldaia.
+- Dashboard web locale senza password, con stato, diagnostica e ultimi eventi.
+- Configurazione Wi-Fi e Ariston direttamente da browser.
+- Verifica dello stato e riallineamento manuale.
+- Aggiornamenti firmware OTA senza perdita delle impostazioni.
+- Access point Wi-Fi di recupero in caso di perdita della rete domestica.
+
+## Come funziona
+
+| Evento | Azione |
 |---|---|
-| Aperto → chiuso (pompa ON) | PlantMode=0 (Estate) |
-| Chiuso → aperto (pompa OFF) | PlantMode=1 (Inverno) |
-| Accensione / riavvio | Nessuna scrittura |
-| Riconnessione Wi-Fi | Nessuna scrittura, nessun recupero eventi persi |
+| Contatto aperto → chiuso (pompa ON) | Modalità Estate — PlantMode 0 |
+| Contatto chiuso → aperto (pompa OFF) | Modalità Inverno — PlantMode 1 |
+| Accensione o riavvio | Lettura dello stato, nessun cambio modalità |
+| Riconnessione Wi-Fi | Nuova acquisizione del contatto, nessun recupero dei comandi persi |
+| Aggiornamento automatico | Sola lettura dopo 60 minuti dall'ultima lettura riuscita |
 
-L'automazione è sempre attiva quando la centralina è alimentata, configurata e operativa. In estate scollegare l'alimentazione USB della centralina; questo non cambia la modalità della caldaia, che va eventualmente impostata manualmente. Il precedente selettore stagionale e il valore salvato vengono rimossi: anche chi aveva selezionato Estate nelle vecchie versioni avrà l'automazione attiva al prossimo cambio stabile del contatto. La caldaia impostata manualmente su Spenta o altra modalità diversa da 0/1 non viene riattivata automaticamente. La centralina legge automaticamente la modalità della caldaia all'avvio, dopo acquisizione del contatto, connessione Wi-Fi e sincronizzazione NTP; ripete la lettura dopo un'ora dall'ultima lettura riuscita (anche manuale o conseguente a un comando). In caso di errore programma una nuova verifica di sola lettura dopo 5 minuti, sempre nel rispetto del cooldown API. Il polling non invia comandi di cambio modalità. Le variazioni durante assenza alimentazione o rete possono essere perse intenzionalmente. Un nuovo evento invalida i precedenti non ancora inviati; un comando già trasmesso non è annullabile. In caso di esito incerto non si ripete la scrittura.
+Le variazioni del contatto devono rimanere stabili per almeno 3 secondi. Prima di ogni cambio modalità vengono letti lo stato e le opzioni disponibili; dopo il comando viene verificato il risultato sul cloud. Se la caldaia è già nella modalità richiesta, non viene inviata alcuna scrittura. La caldaia impostata manualmente su Spenta o su una modalità diversa da Estate/Inverno non viene riattivata automaticamente.
 
-## Compilazione Mac
+L'automazione è attiva quando il dispositivo è alimentato, configurato e operativo. Durante l'estate è sufficiente scollegare l'alimentazione USB della centralina: questo non modifica la modalità della caldaia.
+
+### Aggiornamento automatico dello stato
+
+La prima lettura viene eseguita dopo la connessione Wi-Fi, la sincronizzazione NTP e l'acquisizione del contatto. Ogni lettura riuscita, anche manuale o conseguente a un comando, fa ripartire l'intervallo di un'ora. In caso di errore viene programmata una nuova lettura dopo 5 minuti, nel rispetto dei limiti delle API.
+
+Il polling è esclusivamente in lettura: non riallinea automaticamente la caldaia. Viene eseguito quando il contatto è stabile e il worker è libero. Una variazione del contatto invalida le letture automatiche superate; una richiesta HTTP già in corso può ritardare il comando successivo.
+
+## Hardware e collegamento
+
+- ESP32 classico con modulo ESP32-WROOM-32 e flash da 4 MB.
+- Alimentazione USB 5 V.
+- Contatto pulito normalmente aperto (NO) del relè della pompa.
+
+| Contatto relè | ESP32 |
+|---|---|
+| NO | GPIO27 |
+| COM | GND |
+
+L'ingresso GPIO27 utilizza il pull-up interno a 3,3 V. Per collegamenti brevi e poco disturbati non è necessaria una resistenza esterna.
+
+**Non applicare tensione esterna al GPIO.** Il contatto deve essere realmente isolato, a potenziale libero e adatto a piccoli segnali. Non collegare direttamente il circuito della bobina o della pompa. Cavi lunghi o vicini alla rete elettrica possono richiedere un ingresso isolato.
+
+## Installazione
+
+Scaricare i file dalla [release più recente](https://github.com/paolofaz/ariston-termocamino-esp32/releases/latest).
+
+| File | Utilizzo |
+|---|---|
+| `ariston-termocamino-factory.bin` | Prima installazione USB, indirizzo 0x0 |
+| `firmware.bin` | Aggiornamento OTA, conserva le impostazioni |
+| `SHA256SUMS.txt` | Checksum SHA-256 dei binari |
+
+### Prima installazione tramite USB
+
+Collegare l'ESP32 al computer. Su macOS individuare la porta seriale con:
+
+```bash
+ls /dev/cu.*
+```
+
+Con esptool 5, dalla cartella contenente il file BIN:
+
+```bash
+esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x0 ariston-termocamino-factory.bin
+```
+
+Sostituire la porta con quella effettiva. Con esptool 4 utilizzare `esptool.py` e `write_flash`.
+
+Il file factory include bootloader, tabella delle partizioni, inizializzazione OTA e applicazione. **Non utilizzarlo per aggiornamenti ordinari:** può sovrascrivere le aree di configurazione. Il file factory resta da verificare su hardware reale.
+
+### Prima configurazione
+
+1. Aprire il monitor seriale a 115200 baud.
+2. Leggere il nome e la password dell'access point `Ariston-Setup-xxxx`. Conservare la password per il recupero.
+3. Collegarsi a questa rete Wi-Fi e aprire http://192.168.4.1.
+4. Inserire SSID e password Wi-Fi, email e password Ariston NET, ed eventualmente l'ID impianto (necessario se l'account contiene più caldaie).
+5. Salvare e attendere il riavvio.
+6. Ricollegarsi alla rete domestica e aprire http://ariston-termocamino.local oppure l'indirizzo IP mostrato sul monitor seriale.
+
+Non è richiesta una password di accesso alla dashboard. L'automazione si attiva automaticamente e il primo aggiornamento dello stato non invia comandi di cambio modalità.
+
+### Aggiornamento OTA
+
+Scaricare il solo `firmware.bin` dalla sezione Releases. Aprire **Aggiornamento firmware** nella dashboard, attendere che non ci siano operazioni in corso e caricare il file, preferibilmente a pompa ferma. Le credenziali Wi-Fi e Ariston vengono conservate.
+
+Durante il caricamento il campionamento del contatto è sospeso; al termine viene acquisito nuovamente senza recuperare gli eventi persi. Non utilizzare il file factory via OTA. In caso di problemi, con la tabella delle partizioni di questo progetto è possibile ripristinare il solo firmware via USB, senza cancellare la flash, scrivendo entrambi gli slot:
+
+```bash
+esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x10000 firmware.bin 0x1f0000 firmware.bin
+```
+
+## Dashboard web
+
+La dashboard mostra lo stato della pompa e del contatto, l'ultima modalità osservata sul cloud Ariston con data e ora, la modalità richiesta dal contatto, la connessione Wi-Fi e lo stato delle comunicazioni.
+
+- **Verifica stato Ariston:** lettura manuale, senza cambio modalità.
+- **Riallinea caldaia:** singolo comando esplicito, solo se necessario e consentito dalla modalità corrente.
+- **Aggiornamento automatico:** stato del polling e tempo indicativo alla prossima lettura.
+- **Diagnostica:** fase API, codice HTTP, codice TLS, heap libero e minimo, stack residuo del worker e contatori.
+- **Ultimi eventi:** 32 eventi conservati in RAM con orario italiano o uptime quando l'ora non è sincronizzata.
+- **Modifica configurazione:** aggiornamento di Wi-Fi, credenziali Ariston e ID impianto. I campi vuoti conservano i valori, salvo le opzioni esplicite per rete aperta e rimozione dell'ID.
+
+La lettura Ariston è un'osservazione storica, non una conferma in tempo reale. Eventuali disallineamenti o comandi non confermati vengono segnalati; l'avviso viene conservato in memoria anche dopo un riavvio. Non vengono memorizzati comandi da ripetere automaticamente.
+
+## Recupero e risoluzione dei problemi
+
+### Wi-Fi non disponibile
+
+Dopo 5 minuti senza Wi-Fi si attiva l'access point WPA2 `Ariston-Recovery-xxxx`. Per recuperare la password, utilizzare il monitor seriale a 115200 baud e inviare:
+
+```text
+SHOW_RECOVERY
+```
+
+Collegarsi alla rete di recupero, aprire http://192.168.4.1 e modificare la configurazione. L'access point si spegne quando la rete domestica torna disponibile. In modalità AP+STA, scansioni e cambi di canale possono interrompere temporaneamente la connessione di recupero.
+
+### Errore Ariston
+
+Un HTTP 404 durante il login può indicare credenziali errate. Verificare email e password dalla pagina di configurazione. I login rifiutati comportano una pausa di 5 minuti. Le risposte HTTP 429 attivano un cooldown adattivo che rispetta anche il valore numerico di Retry-After.
+
+Il monitor seriale registra le fasi delle richieste senza mostrare credenziali, token, URL completi o corpi delle risposte.
+
+### Ripristino della configurazione
+
+A dispositivo già avviato, tenere premuto BOOT per 10 secondi e rilasciarlo, oppure inviare `RESET_CONFIG` via seriale. La configurazione viene cancellata, ma la password dell'access point di recupero rimane disponibile. Ricollegarsi alla rete `Ariston-Setup-xxxx` e ripetere la configurazione.
+
+## Compilazione da sorgente (macOS)
 
 ```bash
 uv tool install --python 3.12 --with certifi==2026.11.20 --with cryptography==50.0.2 platformio==6.1.18
@@ -28,51 +147,17 @@ pio run -t upload
 pio device monitor
 ```
 
-Se PlatformIO è già installato via uv, usare `uv tool install --force --python 3.12 --with certifi==2026.11.20 --with cryptography==50.0.2 platformio==6.1.18`.
-Il bundle TLS viene generato da certifi in compilazione. Nessuna modalità TLS insecure. Necessaria sincronizzazione NTP per autenticare il certificato. Il firmware OTA è in `.pio/build/esp32dev/firmware.bin`.
+Se PlatformIO è già installato tramite uv, utilizzare `uv tool install --force` con gli stessi argomenti. Il bundle delle CA TLS viene generato durante la compilazione. Il firmware OTA è disponibile in `.pio/build/esp32dev/firmware.bin`.
 
-### Installazione da binario già compilato
+GitHub Actions esegue i test della logica di contatto, del flusso di controllo, del parser PlantMode e della temporizzazione del polling, quindi compila e prepara i binari. Per pubblicare una nuova versione, aggiornare `VERSION` e avviare Build ESP32 con l'opzione `publish_release`, oppure includere `[release]` nel messaggio del commit su main. Le release esistenti non vengono sovrascritte.
 
-Scaricare i BIN dalla sezione [Releases](https://github.com/paolofaz/ariston-termocamino-esp32/releases). Le build di sviluppo sono disponibili anche come ZIP `ariston-termocamino-esp32` in [GitHub Actions](https://github.com/paolofaz/ariston-termocamino-esp32/actions). I due file sono:
+## Sicurezza e limiti
 
-- `ariston-termocamino-factory.bin`: immagine completa per prima installazione USB su ESP32 classico 4 MB, indirizzo `0x0` (bootloader, partizioni, inizializzazione OTA e applicazione).
-- `firmware.bin`: applicazione per aggiornamento OTA dalla pagina web; non usare il factory per OTA.
+- Utilizzare soltanto una rete domestica fidata: dashboard, configurazione e OTA sono accessibili senza autenticazione dalla sottorete locale. Non esporre il dispositivo a Internet.
+- Le credenziali sono conservate nella NVS non cifrata; l'access point è protetto con WPA2. Le API Ariston utilizzano HTTPS con verifica dei certificati; la dashboard locale usa HTTP.
+- Le API cloud sono non ufficiali e possono cambiare. Il tempo di esecuzione dipende dalla rete e da Ariston; il cambio modalità comprende lettura preliminare, invio e verifica.
+- Una scrittura incerta non viene ripetuta automaticamente. Gli eventi durante assenza di alimentazione o rete possono essere persi. Una richiesta già trasmessa non è annullabile.
+- Il firmware non è real-time e non costituisce un interblocco di sicurezza. Eventuali esclusioni necessarie tra caldaia e termocamino devono essere realizzate localmente da un tecnico qualificato, indipendentemente da Internet.
+- L'OTA non prevede verifica crittografica della firma o rollback automatico. Utilizzare esclusivamente binari fidati del progetto.
 
-Con esptool 5: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x0 ariston-termocamino-factory.bin`. Sostituire la porta con quella effettiva. Per esptool 4 il comando è `esptool.py --chip esp32 --port /dev/cu.usbserial-XXXX write_flash 0x0 ariston-termocamino-factory.bin`. Non usare il factory per aggiornamenti ordinari: riscrive anche le aree di configurazione. Il file factory non è ancora collaudato su hardware reale.
-
-## Prima configurazione e prova
-
-1. Collegare ESP32 via USB e aprire il monitor seriale a 115200.
-2. Al primo avvio, leggere nome e password casuale della rete Ariston-Setup sul monitor seriale (conservare la password per il recupero); connettersi direttamente a quella rete e aprire http://192.168.4.1.
-3. Inserire Wi-Fi, credenziali Ariston NET, eventuale ID impianto (obbligatorio se più caldaie nell'account). Il firmware si riavvia senza inviare comandi.
-4. Tornare alla rete di casa; aprire http://ariston-termocamino.local oppure http://IP (IP nel monitor seriale) senza login. Verifica stato e riallineamento sono disponibili direttamente. Anche Configurazione e Aggiornamento firmware sono accessibili senza login. La vecchia password di manutenzione non viene più utilizzata e viene rimossa dalla configurazione NVS al primo avvio, senza cancellare le altre impostazioni.
-5. L’automazione è già operativa: non esiste un selettore stagionale né una modalità simulazione. Il primo aggiornamento dello stato avviene automaticamente; il pulsante Verifica stato Ariston rimane disponibile su richiesta (sola lettura).
-6. Attendere acquisizione iniziale. Con caldaia e impianto sorvegliati, aprire/chiudere un ponticello tra GPIO27 e GND per almeno 3 secondi: i comandi sono reali. Controllare l’app ufficiale e gli ultimi eventi. Verificare anche riavvio e perdita Wi-Fi.
-
-## Recupero e diagnostica
-
-La dashboard mostra la fase API, il codice HTTP/trasporto, il codice TLS e la memoria libera dell’ultima operazione; il monitor seriale a 115200 registra ogni richiesta senza URL completi, token, credenziali o corpi delle risposte. Usare Verifica stato Ariston per diagnosticare senza scritture. Le richieste includono sempre ar.authToken (vuoto prima del login) e Accept: */*, come nel client Home Assistant. Un HTTP 404 durante il login può indicare credenziali errate, come verificato dal test sul Mac; si applica una pausa di 5 minuti senza ritentare automaticamente. La lettura usa lo stesso insieme di proprietà di ha-ariston-cube e accetta codici numerici interi, float integrali o stringhe di una cifra. Una lettura valida senza opzioni è mostrata, ma non autorizza scritture verso modalità non dichiarate. Il parser è coperto da test host con ArduinoJson.
-
-- Il pulsante **Riallinea caldaia** avvia una singola operazione esplicita verso la modalità richiesta dal contatto stabile. Rispetta il limite delle modalità 0/1, non scrive se la caldaia è già allineata e non riattiva una caldaia spenta. Non esiste un riallineamento automatico.
-- Un evento in corso, perso o non confermato lascia un avviso persistente in NVS. Non vengono salvati comandi da eseguire al boot. Una successiva operazione riuscita o una lettura (automatica o manuale) corrispondente al contatto stabile può cancellare l'avviso. L'ultima osservazione Ariston è mantenuta in RAM anche quando una chiamata fallisce; è storica, con data, e non prova lo stato attuale della caldaia. Dopo riavvio la lettura resta sconosciuta fino alla prima lettura automatica riuscita; nessuna modalità viene recuperata dalla NVS.
-- Dopo un esito POST incerto si tenta una lettura, se il servizio è raggiungibile e non in cooldown; mai una seconda scrittura. Un rifiuto 429 non viene ritentato. Un login rifiutato impone una pausa di 5 minuti in RAM; un token precedentemente ottenuto ma scaduto può essere rinnovato una volta. Il polling parte solo quando il worker è libero e il contatto è stabile. Una variazione del contatto invalida la lettura automatica in corso prima delle richieste successive; una singola richiesta HTTP già in corso non è annullabile e può ritardare il nuovo comando. La dashboard separa l'ultimo esito operativo dallo stato del polling e mostra quando è prevista la prossima lettura.
-- Gli ultimi 32 eventi sono mantenuti in RAM con ora locale italiana NTP (oppure uptime finché l'orologio non è sincronizzato). La dashboard mostra heap libero, minimo e blocco maggiore, stack minimo residuo del worker e contatori dall'avvio. Non è previsto un servizio push.
-- Se il Wi-Fi manca per 5 minuti, si avvia un access point WPA2 `Ariston-Recovery-xxxx`, con password casuale persistente mostrata sul monitor seriale durante il setup o su richiesta mediante il comando USB `SHOW_RECOVERY` (115200 baud). Non viene più esposta via HTTP. Conservare questa password. Collegarsi direttamente e aprire http://192.168.4.1; aprire Modifica configurazione senza login. In modalità AP+STA le scansioni e i cambi di canale possono interrompere temporaneamente la connessione dei client: da verificare su hardware reale. L'AP si spegne quando il Wi-Fi di casa torna disponibile; non vengono recuperati gli eventi persi. Alla riconnessione si acquisisce una nuova baseline senza scrivere e si segnalano eventuali cambi non ancora stabilizzati.
-- Dalla pagina Modifica configurazione si possono aggiornare Wi-Fi, account Ariston, e ID impianto senza ripristinare l'intero dispositivo. Il salvataggio riavvia il dispositivo senza inviare comandi. Campi lasciati vuoti conservano i valori, salvo le opzioni esplicite per rete aperta e rimozione ID impianto.
-- Per un reset completo della configurazione, tenere premuto BOOT per 10 secondi e poi rilasciarlo **a dispositivo già avviato** (non durante l'accensione), oppure inviare `RESET_CONFIG` via seriale. La configurazione viene cancellata, ma la password AP di recupero viene conservata: ricollegarsi ad `Ariston-Setup-xxxx` e ripetere la configurazione. In fase di avvio la pressione di BOOT può entrare nella modalità flash del chip. Le password non vengono pubblicate nel repository; sono salvate nella NVS locale non cifrata. Tutte le pagine HTTP, inclusi configurazione e OTA, sono accessibili senza autenticazione a chiunque possa raggiungere il dispositivo dalla sottorete locale: tali utenti possono anche cambiare le impostazioni e installare firmware. Le richieste richiedono il nome host previsto o IP locale, provenienza dalla sottorete STA/AP e un token anti-CSRF per le modifiche; questi controlli non sostituiscono l'autenticazione. Usare soltanto una rete privata fidata, non esporre porte Internet. Le credenziali di configurazione transitano nella rete AP protetta da password.
-
-## Aggiornamento OTA
-
-Senza operazioni in corso, preferibilmente a pompa ferma, aprire Aggiornamento firmware e caricare il solo firmware.bin. Durante il caricamento il campionamento del contatto è sospeso; gli eventi non vengono recuperati e si acquisisce una nuova baseline senza scrivere. Per aggiornare da v0.1.2-dev o v0.1.3-dev selezionare Estate nella vecchia pagina e usare la procedura OTA esistente. Le credenziali Wi-Fi e Ariston sono conservate; le vecchie impostazioni di stagione e password di manutenzione sono rimosse. Se si proviene da una versione con autenticazione OTA e non si ricorda la password, utilizzare USB con il solo firmware.bin in entrambi gli slot applicativi, senza cancellare la flash o scrivere il factory: `esptool --chip esp32 --port /dev/cu.usbserial-XXXX write-flash 0x10000 firmware.bin 0x1f0000 firmware.bin` (valido per la tabella partizioni di questo progetto). I due slot OTA conservano la NVS durante aggiornamenti normali. L'immagine non è firmata: usare esclusivamente build fidate dello stesso progetto. Verificare OTA su banco prima dell'uso reale. In caso di problemi recuperare via USB.
-
-## Limiti
-
-API cloud non ufficiali, non garantite; nessun interblocco di sicurezza. Se caldaia e termocamino necessitano di esclusione reciproca per sicurezza, questa va realizzata localmente e indipendentemente da Internet e dal firmware, con un tecnico qualificato. Un POST è preceduto da lettura, verifica delle opzioni, controllo dell'evento, e seguito da readback cloud. Un esito cloud non prova lo stato fisico del bruciatore. Nessun retry automatico dopo una scrittura incerta. Cooldown HTTP 429 adattivo; Retry-After numerico supportato. Il firmware non è real-time: una richiesta web locale lenta può ritardare il campionamento del GPIO. L'OTA non ha rollback automatico né verifica crittografica della firma; recupero USB se necessario. Nessuna credenziale reale nei test.
-
-## Sviluppo
-
-Branch main, firmware 1.0.0. La temporizzazione del polling è coperta da test host, incluso il rollover di millis(). Test della logica di contatto su host: `c++ -std=c++17 -Iinclude test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test`. Test del flusso di controllo reale con trasporto fittizio: `c++ -std=c++17 -Iinclude test/control_flow_test.cpp -o /tmp/control-flow-test && /tmp/control-flow-test`. Il workflow GitHub Actions esegue entrambi e compila il firmware. Le dipendenze del generatore del bundle TLS sono fissate alle versioni risolte dalla build del 25 novembre 2026; aggiornare deliberatamente le CA e le librerie nel tempo. Si mantiene il bundle Mozilla completo per non dipendere da una singola CA Ariston. La lettura e le transizioni Estate/Inverno sono state verificate dall'utente su ESP32 con la v0.1.8-dev; i nuovi aggiornamenti automatici e il funzionamento prolungato restano da collaudare. I tempi cloud dipendono da Ariston e dalla rete; il comando include acquisizione del contatto (3 s), lettura preliminare, invio e readback.
-
-### Pubblicazione firmware
-
-Per una nuova versione numerica, aggiornare `VERSION` e avviare Build ESP32 da Actions con `publish_release` selezionato, oppure inserire `[release]` nel messaggio del commit pubblicato su main. Solo dopo test e compilazione riusciti, il workflow crea il tag e la release con entrambi i BIN e i checksum SHA-256. Le release già esistenti non vengono sovrascritte.
+Lettura e transizioni Estate/Inverno sono state verificate su hardware reale. Il polling automatico, il recupero Wi-Fi e il funzionamento prolungato richiedono ulteriore verifica sul dispositivo.
