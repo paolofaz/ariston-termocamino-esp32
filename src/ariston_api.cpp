@@ -50,6 +50,7 @@ const char* errorMessage(int n) {
     if (n == CANCELLED) return "Evento superato: nessuna scrittura";
     if (n == AUTH_BLOCKED) return "Login rifiutato: pausa di 5 minuti";
     if (authError(n)) return "Ariston: autenticazione non riuscita";
+    if (n == 404) return "Ariston: endpoint non trovato (HTTP 404)";
     if (n == OFFLINE) return "Wi-Fi non disponibile";
     if (n == CLOCK) return "Orologio non sincronizzato: TLS non disponibile";
     if (n == BAD_DATA || n == BAD_JSON) return "Ariston: risposta inattesa o impianto non valido";
@@ -85,7 +86,9 @@ int AristonApi::request(const char* method, const String& path, const JsonDocume
     http.setReuse(false);
     http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     http.setUserAgent("RestSharp/106.11.7.0");
-    if (token_.length()) http.addHeader("ar.authToken", token_);
+    // Match the known mobile client: send the header even before the first login.
+    http.addHeader("ar.authToken", token_);
+    http.addHeader("Accept", "*/*");
     const char* headers[]={"Retry-After"};
     http.collectHeaders(headers, 1);
     int status;

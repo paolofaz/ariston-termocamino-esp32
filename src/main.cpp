@@ -16,7 +16,7 @@ namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="0.1.6-dev";
+constexpr char VERSION[]="0.1.7-dev";
 Preferences prefs;
 WebServer server(80);
 AristonConfig ariston;
