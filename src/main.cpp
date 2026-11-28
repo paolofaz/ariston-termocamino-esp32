@@ -16,12 +16,12 @@ namespace {
 constexpr int PIN=27, BOOT_PIN=0;
 constexpr uint32_t RECOVERY_DELAY=300000, BOOT_HOLD=10000;
 constexpr char HOST[]="ariston-termocamino";
-constexpr char VERSION[]="0.1.4-dev";
-constexpr char REALM[]="Ariston Termocamino";
+constexpr char VERSION[]="0.1.5-dev";
 Preferences prefs;
 WebServer server(80);
 AristonConfig ariston;
-String ssid, wifiPassword, adminPassword, csrf, adminCsrf, recoveryPassword;
+String ssid, wifiPassword, csrf, recoveryPassword;
+bool legacyAdminPresent=false;
 bool recoveryActive=false, mdnsActive=false, recoveryStored=false;
 uint32_t offlineSince=0, bootSince=0, baselineSince=0;
 bool bootArmed=false, bootPressed=false, noisyLogged=false;
@@ -148,7 +148,7 @@ String pageStart(const char* title) {
     h+=F("</title><style>body{font:16px system-ui;background:#f3f5f7;color:#162338;margin:0}main{max-width:640px;margin:auto;padding:20px}section{background:white;border:1px solid #dce1e8;border-radius:12px;padding:18px;margin:12px 0}h1{font-size:26px;margin:12px 0}h2{font-size:18px;margin-top:0}p{line-height:1.45}small{color:#536174}button{padding:12px 16px;border:1px solid #8190a4;border-radius:8px;background:white;color:#162338;font:inherit;cursor:pointer;margin:4px 4px 4px 0}button.primary{background:#215a91;color:white;border-color:#215a91}input{box-sizing:border-box;width:100%;padding:10px;border:1px solid #8190a4;border-radius:6px;margin:5px 0 12px;font:inherit}label{display:block}dl{display:grid;grid-template-columns:1fr 1fr;gap:8px}dd{margin:0;font-weight:600}li{margin:8px 0}a{color:#215a91}button:disabled{opacity:.5}</style><main><h1>");
     h+=title;h+=F("</h1>");return h;
 }
-String hidden(bool admin=false){return "<input type='hidden' name='csrf' value='"+(admin?adminCsrf:csrf)+"'>";}
+String hidden(){return "<input type='hidden' name='csrf' value='"+csrf+"'>";}
 String form(const char* path,const char* name,const char* value,const char* label,bool selected=false,bool disabled=false){
     String h="<form style='display:inline-block' method='post' action='";h+=path;h+="'>";h+=hidden();
     h+="<button name='";h+=name;h+="' value='";h+=value;h+="'";
@@ -169,23 +169,23 @@ void redirect(){headers();server.sendHeader("Location","/");server.send(303,"tex
 bool localHost(){
     String host=server.hostHeader();host.toLowerCase();
     if(host.endsWith(":80"))host.remove(host.length()-3);
-    if(WiFi.status()==WL_CONNECTED &&
-       (host==WiFi.localIP().toString()||host=="ariston-termocamino.local"||host==HOST))return true;
-    return (setupMode||recoveryActive)&&host==WiFi.softAPIP().toString();
+    IPAddress peer=server.client().remoteIP();
+    IPAddress sta=WiFi.localIP(), mask=WiFi.subnetMask();
+    if(WiFi.status()==WL_CONNECTED && uint32_t(mask)!=0 &&
+       (uint32_t(peer)&uint32_t(mask))==(uint32_t(sta)&uint32_t(mask)) &&
+       (host==sta.toString()||host=="ariston-termocamino.local"||host==HOST))return true;
+    IPAddress ap=WiFi.softAPIP();
+    return (setupMode||recoveryActive)&&host==ap.toString()&&
+           peer[0]==ap[0]&&peer[1]==ap[1]&&peer[2]==ap[2];
 }
 bool requireLocal(){
     if(localHost())return true;
     sendText(403,"Usare l'indirizzo IP locale o ariston-termocamino.local");return false;
 }
-bool authorized(){
+bool tokenValid(){return server.hasArg("csrf")&&server.arg("csrf")==csrf;}
+bool postAuthorized(){
     if(!requireLocal())return false;
-    if(server.authenticate("admin",adminPassword.c_str()))return true;
-    headers();server.requestAuthentication(DIGEST_AUTH,REALM,"Autenticazione richiesta");return false;
-}
-bool tokenValid(bool admin=false){return server.hasArg("csrf")&&server.arg("csrf")==(admin?adminCsrf:csrf);}
-bool postAuthorized(bool admin=false){
-    if(admin?!authorized():!requireLocal())return false;
-    if(!tokenValid(admin)){sendText(403,"Richiesta non valida");return false;}
+    if(!tokenValid()){sendText(403,"Richiesta non valida");return false;}
     if(restartRequested){sendText(409,"Riavvio in corso");return false;}
     return true;
 }
@@ -196,8 +196,8 @@ bool loadSettings(){
     if(json.isEmpty()||deserializeJson(d,json))return false;
     ssid=d["ssid"]|"";wifiPassword=d["wifi"]|"";
     ariston.username=d["username"]|"";ariston.password=d["password"]|"";
-    ariston.plant=d["plant"]|"";adminPassword=d["admin"]|"";
-    return ssid.length()&&ariston.username.length()&&ariston.password.length()&&adminPassword.length()>=12;
+    ariston.plant=d["plant"]|"";legacyAdminPresent=d.containsKey("admin");
+    return ssid.length()&&ariston.username.length()&&ariston.password.length();
 }
 String timeLabel(time_t epoch,uint32_t seconds=0){
     if(epoch>=1735689600){
@@ -208,9 +208,9 @@ String timeLabel(time_t epoch,uint32_t seconds=0){
     return "+"+String(seconds)+" s (ora non sincronizzata)";
 }
 bool validWifi(const String& s,const String& w){return s.length()>0&&s.length()<=32&&(w.isEmpty()||(w.length()>=8&&w.length()<=63));}
-bool storeConfig(const String& s,const String& w,const String& u,const String& p,const String& id,const String& a){
+bool storeConfig(const String& s,const String& w,const String& u,const String& p,const String& id){
     JsonDocument d;
-    d["ssid"]=s;d["wifi"]=w;d["username"]=u;d["password"]=p;d["plant"]=id;d["admin"]=a;
+    d["ssid"]=s;d["wifi"]=w;d["username"]=u;d["password"]=p;d["plant"]=id;
     String payload;
     return !d.overflowed()&&serializeJson(d,payload)>0&&prefs.putString("config",payload)==payload.length();
 }
@@ -219,38 +219,38 @@ void setupPage(){
     String h=pageStart("Configurazione iniziale");
     h+=F("<section><p>Compila solo connesso direttamente alla rete Wi-Fi di configurazione della centralina. L automazione e attiva quando il dispositivo e alimentato e configurato. Nessun comando al riavvio.</p><form method='post' action='/setup'>");
     h+=hidden();
-    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><label>Password manutenzione (almeno 12 caratteri, non serve per la dashboard)<input name='admin' type='password' minlength='12' maxlength='64' required></label><button class='primary'>Salva e riavvia</button></form></section>");
+    h+=F("<label>Wi-Fi di casa<input name='ssid' maxlength='32' required></label><label>Password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label>Email Ariston NET<input name='username' maxlength='160' required></label><label>Password Ariston NET<input name='password' type='password' maxlength='160' required></label><label>ID impianto (vuoto solo se hai una caldaia)<input name='plant' maxlength='128'></label><button class='primary'>Salva e riavvia</button></form></section>");
     sendHtml(h);
 }
 void saveSetup(){
     if(!requireLocal())return;
     if(!setupMode||!tokenValid()||!storageOk||restartRequested){sendText(403,"Configurazione non disponibile");return;}
-    String s=server.arg("ssid"),w=server.arg("wifi"),u=server.arg("username"),p=server.arg("password"),id=server.arg("plant"),a=server.arg("admin");
-    if(!validWifi(s,w)||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128||a.length()<12||a.length()>64){
+    String s=server.arg("ssid"),w=server.arg("wifi"),u=server.arg("username"),p=server.arg("password"),id=server.arg("plant");
+    if(!validWifi(s,w)||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128){
         sendText(400,"Campi non validi");return;
     }
-    if(!prefs.putBool("issue",false)||!storeConfig(s,w,u,p,id,a)){
+    if(!prefs.putBool("issue",false)||!storeConfig(s,w,u,p,id)){
         sendText(500,"Errore salvataggio");return;
     }
     sendText(200,"Configurazione salvata. Riavvio in corso. Ricollega il telefono alla rete di casa.");
     scheduleRestart();
 }
 void configurationPage(){
-    if(!authorized())return;
+    if(!requireLocal())return;
     String h=pageStart("Configurazione");
     h+=F("<section><p>Lascia vuoti i campi da conservare. Per cambiare Wi-Fi senza password seleziona rete aperta. Modifica credenziali solo su una rete privata fidata.</p><form method='post' action='/config'>");
-    h+=hidden(true);
-    h+=F("<label>Nuovo nome Wi-Fi<input name='ssid' maxlength='32'></label><label>Nuova password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label><input style='width:auto' type='checkbox' name='open' value='1'> Rete aperta (cancella password Wi-Fi)</label><label>Nuova email Ariston NET<input name='username' maxlength='160'></label><label>Nuova password Ariston NET<input name='password' type='password' maxlength='160'></label><label>Nuovo ID impianto<input name='plant' maxlength='128'></label><label><input style='width:auto' type='checkbox' name='autoPlant' value='1'> Rimuovi ID (un solo impianto)</label><label>Nuova password amministratore<input name='admin' type='password' maxlength='64'></label><button class='primary'>Salva e riavvia</button></form><p><a href='/'>Indietro</a></p></section>");
+    h+=hidden();
+    h+=F("<label>Nuovo nome Wi-Fi<input name='ssid' maxlength='32'></label><label>Nuova password Wi-Fi<input name='wifi' type='password' maxlength='63'></label><label><input style='width:auto' type='checkbox' name='open' value='1'> Rete aperta (cancella password Wi-Fi)</label><label>Nuova email Ariston NET<input name='username' maxlength='160'></label><label>Nuova password Ariston NET<input name='password' type='password' maxlength='160'></label><label>Nuovo ID impianto<input name='plant' maxlength='128'></label><label><input style='width:auto' type='checkbox' name='autoPlant' value='1'> Rimuovi ID (un solo impianto)</label><button class='primary'>Salva e riavvia</button></form><p><a href='/'>Indietro</a></p></section>");
     if(recoveryStored){
         h+=F("<section><h2>Wi-Fi di recupero</h2><p>Rete: Ariston-Recovery-");h+=String(uint32_t(ESP.getEfuseMac())&0xffff,HEX);
-        h+=F("<br>Password: <strong>");h+=recoveryPassword;h+=F("</strong><br>Indirizzo: 192.168.4.1. Conservare la password.</p></section>");
+        h+=F("<br>Indirizzo: 192.168.4.1. Password di recupero disponibile via USB (comando seriale SHOW_RECOVERY).</p></section>");
     }
     sendHtml(h);
 }
 void saveConfiguration(){
-    if(!postAuthorized(true))return;
+    if(!postAuthorized())return;
     if(pendingOrBusy()||!storageOk){sendText(409,"Operazione in corso o memoria non disponibile");return;}
-    String s=server.arg("ssid"),w=server.arg("wifi"),u=server.arg("username"),p=server.arg("password"),id=server.arg("plant"),a=server.arg("admin");
+    String s=server.arg("ssid"),w=server.arg("wifi"),u=server.arg("username"),p=server.arg("password"),id=server.arg("plant");
     if(s.isEmpty())s=ssid;
     if(server.hasArg("open"))w="";
     else if(w.isEmpty()){
@@ -264,11 +264,10 @@ void saveConfiguration(){
     }
     if(server.hasArg("autoPlant"))id="";
     else if(id.isEmpty())id=ariston.plant;
-    if(a.isEmpty())a=adminPassword;
-    if(!validWifi(s,w)||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128||a.length()<12||a.length()>64){
+    if(!validWifi(s,w)||!u.length()||u.length()>160||!p.length()||p.length()>160||id.length()>128){
         sendText(400,"Campi non validi");return;
     }
-    if(!storeConfig(s,w,u,p,id,a)){sendText(500,"Errore salvataggio");return;}
+    if(!storeConfig(s,w,u,p,id)){sendText(500,"Errore salvataggio");return;}
     sendText(200,"Configurazione salvata. Riavvio senza invio di comandi.");
     scheduleRestart();
 }
@@ -301,7 +300,7 @@ void dashboard(){
     h+=F("</dd><dt>Uptime</dt><dd>");h+=String(millis()/1000);h+=F(" s</dd><dt>POST tentati</dt><dd>");h+=String(attemptedCount);
     h+=F("</dd><dt>Comandi confermati</dt><dd>");h+=String(confirmedCount);h+=F("</dd><dt>Errori operazioni</dt><dd>");h+=String(errorCount);h+=F("</dd></dl></section><section><h2>Rete e configurazione</h2>");
     h+=F("<p><a href='/config'>Modifica configurazione Wi-Fi e Ariston</a></p><p>Nome locale: ariston-termocamino.local</p>");
-    if(recoveryStored){h+=F("<p>Wi-Fi di recupero dopo 5 minuti senza rete: <strong>Ariston-Recovery-");h+=String(uint32_t(ESP.getEfuseMac())&0xffff,HEX);h+=F("</strong><br>Indirizzo: 192.168.4.1. Password nella pagina Configurazione protetta.</p>");}
+    if(recoveryStored){h+=F("<p>Wi-Fi di recupero dopo 5 minuti senza rete: <strong>Ariston-Recovery-");h+=String(uint32_t(ESP.getEfuseMac())&0xffff,HEX);h+=F("</strong><br>Indirizzo: 192.168.4.1. Password disponibile via USB (SHOW_RECOVERY).</p>");}
     else h+=F("<p>Wi-Fi recupero non disponibile: errore memoria.</p>");
     h+=F("</section><section><h2>Ultimi eventi</h2><ul>");
     Log copy[LOG_COUNT];size_t n,next;
@@ -310,15 +309,15 @@ void dashboard(){
     for(size_t i=0;i<LOG_COUNT;++i)copy[i]=logEntries[i];
     portEXIT_CRITICAL(&logMux);
     for(size_t i=0;i<n;++i){const Log& x=copy[(next+LOG_COUNT-1-i)%LOG_COUNT];h+="<li><small>";h+=timeLabel(x.epoch,x.seconds);h+="</small> ";h+=x.text;h+="</li>";}
-    h+=F("</ul></section><section><h2>Aggiornamento firmware</h2><p><a href='/update'>Apri manutenzione firmware (password)</a></p></section><small>API Ariston non ufficiali. Non utilizzare per funzioni di sicurezza.</small>");
+    h+=F("</ul></section><section><h2>Aggiornamento firmware</h2><p><a href='/update'>Apri aggiornamento firmware</a></p></section><small>API Ariston non ufficiali. Non utilizzare per funzioni di sicurezza.</small>");
     sendHtml(h);
 }
 void firmwarePage(){
-    if(!authorized())return;
+    if(!requireLocal())return;
     String h=pageStart("Aggiornamento firmware");
     h+=F("<section><p>Aggiornare quando non ci sono operazioni Ariston in corso, preferibilmente a pompa ferma. Caricare esclusivamente il firmware.bin compilato per questa centralina da una fonte fidata.</p>");
     if(!pendingOrBusy()&&!restartRequested){
-        h+="<form method='post' enctype='multipart/form-data' action='/update?csrf="+adminCsrf+"'><input type='file' name='firmware' accept='.bin' required><button>Aggiorna firmware</button></form>";
+        h+="<form method='post' enctype='multipart/form-data' action='/update?csrf="+csrf+"'><input type='file' name='firmware' accept='.bin' required><button>Aggiorna firmware</button></form>";
     }else h+=F("<p>Attendi la fine delle operazioni in corso.</p>");
     h+=F("<p><a href='/'>Indietro</a></p></section>");sendHtml(h);
 }
@@ -342,7 +341,7 @@ void alignCloud(){
 void uploadChunk(){
     HTTPUpload& u=server.upload();
     if(u.status==UPLOAD_FILE_START){
-        uploadAuthorized=localHost()&&server.authenticate("admin",adminPassword.c_str())&&tokenValid(true)&&!pendingOrBusy()&&!restartRequested;
+        uploadAuthorized=localHost()&&tokenValid()&&!pendingOrBusy()&&!restartRequested;
         uploadOk=false;uploadStarted=false;
         if(uploadAuthorized){
             uploadStarted=Update.begin(UPDATE_SIZE_UNKNOWN,U_FLASH);uploadOk=uploadStarted;
@@ -397,6 +396,8 @@ void serialCommands(){
         if(c=='\n'||c=='\r'){
             if(serialLine=="RESET_CONFIG"){
                 resetConfig();
+            }else if(serialLine=="SHOW_RECOVERY"){
+                Serial.println("Password AP: "+recoveryPassword);
             }
             serialLine="";
         }else if(serialLine.length()<64)serialLine+=c;
@@ -411,6 +412,11 @@ void setup(){
     setenv("TZ","CET-1CEST,M3.5.0,M10.5.0/3",1);tzset();
     storageOk=prefs.begin("ariston",false);
     setupMode=!storageOk||!loadSettings();
+    if(!setupMode&&legacyAdminPresent){
+        if(storeConfig(ssid,wifiPassword,ariston.username,ariston.password,ariston.plant))
+            logEvent("Vecchia password manutenzione rimossa");
+        else logEvent("Migrazione configurazione non salvata: password manutenzione comunque ignorata");
+    }
     WiFi.persistent(false);
     WiFi.mode(setupMode?WIFI_AP:WIFI_STA); // enable radio before generating secrets
     if(storageOk)recoveryPassword=prefs.getString("recover","");
@@ -435,7 +441,7 @@ void setup(){
         WiFi.setHostname(HOST);
         offlineSince=millis();
         WiFi.begin(ssid.c_str(),wifiPassword.c_str());
-        csrf=randomHex();adminCsrf=randomHex();
+        csrf=randomHex();
         configTzTime("CET-1CEST,M3.5.0,M10.5.0/3","pool.ntp.org","time.cloudflare.com");
         queueHandle=xQueueCreate(4,sizeof(Event));
         resultQueue=xQueueCreate(4,sizeof(Completed));
