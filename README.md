@@ -33,7 +33,7 @@ Il bundle TLS viene generato da certifi in compilazione. Nessuna modalità TLS i
 
 ### Installazione da binario già compilato
 
-Scaricare lo ZIP `ariston-termocamino-esp32` dall'ultima esecuzione riuscita di [GitHub Actions](https://github.com/paolofaz/ariston-termocamino-esp32/actions). Le build con packaging factory includono due file:
+Scaricare i BIN dalla sezione [Releases](https://github.com/paolofaz/ariston-termocamino-esp32/releases). Le build di sviluppo sono disponibili anche come ZIP `ariston-termocamino-esp32` in [GitHub Actions](https://github.com/paolofaz/ariston-termocamino-esp32/actions). I due file sono:
 
 - `ariston-termocamino-factory.bin`: immagine completa per prima installazione USB su ESP32 classico 4 MB, indirizzo `0x0` (bootloader, partizioni, inizializzazione OTA e applicazione).
 - `firmware.bin`: applicazione per aggiornamento OTA dalla pagina web; non usare il factory per OTA.
@@ -72,3 +72,7 @@ API cloud non ufficiali, non garantite; nessun interblocco di sicurezza. Se cald
 ## Sviluppo
 
 Branch main, firmware 1.0.0. La temporizzazione del polling è coperta da test host, incluso il rollover di millis(). Test della logica di contatto su host: `c++ -std=c++17 -Iinclude test/contact_test.cpp -o /tmp/contact-test && /tmp/contact-test`. Test del flusso di controllo reale con trasporto fittizio: `c++ -std=c++17 -Iinclude test/control_flow_test.cpp -o /tmp/control-flow-test && /tmp/control-flow-test`. Il workflow GitHub Actions esegue entrambi e compila il firmware. Le dipendenze del generatore del bundle TLS sono fissate alle versioni risolte dalla build del 25 novembre 2026; aggiornare deliberatamente le CA e le librerie nel tempo. Si mantiene il bundle Mozilla completo per non dipendere da una singola CA Ariston. La lettura e le transizioni Estate/Inverno sono state verificate dall'utente su ESP32 con la v0.1.8-dev; i nuovi aggiornamenti automatici e il funzionamento prolungato restano da collaudare. I tempi cloud dipendono da Ariston e dalla rete; il comando include acquisizione del contatto (3 s), lettura preliminare, invio e readback.
+
+### Pubblicazione firmware
+
+Per una nuova versione numerica, aggiornare `VERSION` e avviare Build ESP32 da Actions con `publish_release` selezionato, oppure inserire `[release]` nel messaggio del commit pubblicato su main. Solo dopo test e compilazione riusciti, il workflow crea il tag e la release con entrambi i BIN e i checksum SHA-256. Le release già esistenti non vengono sovrascritte.

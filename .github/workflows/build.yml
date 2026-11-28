@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Pubblica la versione firmware come GitHub Release'
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -35,3 +40,39 @@ jobs:
           name: ariston-termocamino-esp32
           path: dist/*.bin
           if-no-files-found: error
+  release:
+    needs: build
+    if: github.ref == 'refs/heads/main' && ((github.event_name == 'push' && contains(github.event.head_commit.message, '[release]')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ariston-termocamino-esp32
+          path: dist
+      - name: Publish versioned firmware binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^constexpr char VERSION\[\]="([0-9]+\.[0-9]+\.[0-9]+)";$/\1/p' src/main.cpp)"
+          test -n "$version"
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; refusing to overwrite assets."
+            exit 0
+          fi
+          (cd dist && sha256sum firmware.bin ariston-termocamino-factory.bin > SHA256SUMS.txt)
+          cat > /tmp/release-notes.md <<'EOF'
+          Firmware ESP32-WROOM-32 (4 MB).
+          
+          - `firmware.bin`: aggiornamento OTA, conserva le impostazioni.
+          - `ariston-termocamino-factory.bin`: prima installazione USB, indirizzo 0x0.
+          - `SHA256SUMS.txt`: checksum dei due file.
+          
+          La pubblicazione avviene solo dopo compilazione e test automatici riusciti.
+          Per configurazione, collegamenti, funzionalità e limiti consultare il README.
+          EOF
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Ariston Termocamino ESP32 $version" --notes-file /tmp/release-notes.md dist/firmware.bin dist/ariston-termocamino-factory.bin dist/SHA256SUMS.txt
